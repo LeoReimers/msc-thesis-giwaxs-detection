@@ -8,4 +8,4 @@ scipy
 termcolor
 addict
 yapf
-timm
+timm==0.6.7

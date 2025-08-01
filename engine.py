@@ -15,6 +15,10 @@ import torch
 import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
+from matplotlib import pyplot as plt
+
+COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
+          [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -118,9 +122,23 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         resstat.update({f'weight_{k}': v for k,v in criterion.weight_dict.items()})
     return resstat
 
-
+def plot_results(pil_img, prob, boxes, output_dir, epoch):
+    plt.figure(figsize=(16,10))
+    plt.imshow(pil_img[:,:,0])
+    ax = plt.gca()
+    for p, (xmin, ymin, xmax, ymax), c in zip(prob, boxes.tolist(), COLORS * 100):
+        ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
+                                   fill=False, color=c, linewidth=3))
+        cl = p.argmax()
+        text = f": {p.item():.2f}"
+        ax.text(xmin, ymin, text, fontsize=15,
+                bbox=dict(facecolor='yellow', alpha=0.5))
+    plt.axis('off')
+    #plt.show()    
+    plt.savefig(output_dir + "/output" + str(epoch) + ".jpg")
+    
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, wo_class_error=False, args=None, logger=None):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir,epoch, wo_class_error=False, args=None, logger=None):
     try:
         need_tgt_for_training = args.use_dn
     except:
@@ -142,7 +160,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         useCats = True
     if not useCats:
         print("useCats: {} !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!".format(useCats))
-    coco_evaluator = CocoEvaluator(base_ds, iou_types, useCats=useCats)
+    #coco_evaluator = CocoEvaluator(base_ds, iou_types, useCats=useCats)
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
 
     panoptic_evaluator = None
@@ -191,8 +209,11 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
 
-        if coco_evaluator is not None:
-            coco_evaluator.update(res)
+        plot_results(samples[0].cpu().permute(1, 2, 0), results[0]['scores'].cpu(), results[0]['boxes'].cpu(), output_dir, epoch)
+        break
+
+        """ if coco_evaluator is not None:
+            coco_evaluator.update(res) """
 
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
@@ -266,7 +287,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         torch.save(output_state_dict, savepath)
 
     # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
+    """metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     if coco_evaluator is not None:
         coco_evaluator.synchronize_between_processes()
@@ -294,7 +315,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
 
 
-    return stats, coco_evaluator
+    return stats, coco_evaluator"""
 
 
 @torch.no_grad()
