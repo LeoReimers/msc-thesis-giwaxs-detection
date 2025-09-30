@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright (c) 2022 IDEA. All Rights Reserved.
 # ------------------------------------------------------------------------
 import argparse
@@ -141,6 +142,11 @@ def get_args_parser():
 
     parser.add_argument('--save_results', action='store_true')
     parser.add_argument('--save_log', action='store_true')
+    
+    parser.add_argument("--window_size", type=int, default=None)
+    parser.add_argument("--window_size_h", type=int, default=None)
+    parser.add_argument("--window_size_w", type=int, default=None)
+
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -155,61 +161,74 @@ def get_args_parser():
     return parser
 
 
+def merge_cfg_into_args(args, cfg):
+    """Übernimm Werte aus der Config in argparse-Args,
+    ohne bereits gesetzte CLI-Args zu überschreiben."""
+    cfg_dict = cfg._cfg_dict.to_dict()
+    for k, v in cfg_dict.items():
+        if not hasattr(args, k) or getattr(args, k) is None:
+            setattr(args, k, v)
+    return args
+
+
 def build_model_main(args):
-    # we use register to maintain models from catdet6 on.
     from models.registry import MODULE_BUILD_FUNCS
     assert args.modelname in MODULE_BUILD_FUNCS._module_dict
     build_func = MODULE_BUILD_FUNCS.get(args.modelname)
     model, criterion, postprocessors = build_func(args)
     return model, criterion, postprocessors
 
+
 def main(args):
-    dataset = SimulationDataset()
+    import os, sys, json, time
+    from util.slconfig import SLConfig
+    import util.misc as utils
+    from util.logger import setup_logger
 
     time.sleep(args.rank * 0.02)
+
     cfg = SLConfig.fromfile(args.config_file)
     if args.options is not None:
         cfg.merge_from_dict(args.options)
-    if args.rank == 0:
-        save_cfg_path = os.path.join(args.output_dir, "config_cfg.py")
-        cfg.dump(save_cfg_path)
-        save_json_path = os.path.join(args.output_dir, "config_args_raw.json")
-        with open(save_json_path, 'w') as f:
-            json.dump(vars(args), f, indent=2)
-    cfg_dict = cfg._cfg_dict.to_dict()
-    args_vars = vars(args)
-    for k,v in cfg_dict.items():
-        if k not in args_vars:
-            setattr(args, k, v)
-        else:
-            continue
-            #raise ValueError("Key {} can used by args only".format(k))
 
-    # update some new args temporally
-    if not getattr(args, 'use_ema', None):
+    os.makedirs(args.output_dir, exist_ok=True)
+    if args.rank == 0:
+        cfg.dump(os.path.join(args.output_dir, "config_cfg.py"))
+        with open(os.path.join(args.output_dir, "config_args_raw.json"), "w") as f:
+            json.dump(vars(args), f, indent=2)
+
+    # EINMAL zusammenführen (CLI > Config):
+    args = merge_cfg_into_args(args, cfg)
+
+    # Defaults nachziehen, falls in Config nicht gesetzt
+    if not getattr(args, 'use_ema', False):
         args.use_ema = False
-    if not getattr(args, 'debug', None):
+    if not getattr(args, 'debug', False):
         args.debug = False
 
-    # setup logger
-    os.makedirs(args.output_dir, exist_ok=True)
-    logger = setup_logger(output=os.path.join(args.output_dir, 'info.txt'), distributed_rank=args.rank, color=False, name="detr")
+    # Logger
+    logger = setup_logger(
+        output=os.path.join(args.output_dir, 'info.txt'),
+        distributed_rank=args.rank, color=False, name="detr")
     logger.info("git:\n  {}\n".format(utils.get_sha()))
-    logger.info("Command: "+' '.join(sys.argv))
+    logger.info("Command: " + ' '.join(sys.argv))
     if args.rank == 0:
-        save_json_path = os.path.join(args.output_dir, "config_args_all.json")
-        with open(save_json_path, 'w') as f:
+        with open(os.path.join(args.output_dir, "config_args_all.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
-        logger.info("Full config saved to {}".format(save_json_path))
+        logger.info("Full config saved to {}".format(
+            os.path.join(args.output_dir, "config_args_all.json")))
     logger.info('world size: {}'.format(args.world_size))
     logger.info('rank: {}'.format(args.rank))
     logger.info('local_rank: {}'.format(args.local_rank))
     logger.info("args: " + str(args) + '\n')
 
-
     if args.frozen_weights is not None:
-        assert args.masks, "Frozen training is meant for segmentation only"
+        assert args.masks, "Frozen training ist nur für Segmentation gedacht"
+
     print(args)
+
+    #  hier geht's wie gehabt weiter: build_model_main(args), Datasets/Dataloader, Train/Eval 
+
 
     device = torch.device(args.device)
 
