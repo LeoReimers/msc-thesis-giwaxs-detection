@@ -1,33 +1,29 @@
-_base_ = ['coco_transformer.py']
-
-num_classes=91
-
-lr = 2e-05                     # Start-LR = 5.0e-05
-lr_backbone = 2e-06            # optional: ~0.1 * lr (vorher: 1e-06)
+data_aug_scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
+data_aug_max_size = 1333
+data_aug_scales2_resize = [400, 500, 600]
+data_aug_scales2_crop = [384, 600]
+data_aug_scale_overlap = None
+num_classes = 91
+lr = 1e-05
 param_dict_type = 'default'
+lr_backbone = 1e-05
 lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
 lr_linear_proj_mult = 0.1
 ddetr_lr_param = False
 batch_size = 8
 weight_decay = 0.0001
-epochs = 120                   # Training bis Ep. 130 (wie in deinem Plan)
-lr_drop = 1000                 # ignoriert, solange lr_drop_list gesetzt ist
+epochs = 100
+lr_drop = 75
 save_checkpoint_interval = 1000
 clip_max_norm = 0.1
 onecyclelr = False
-multi_step_lr = True
-
-lr_drop_list = [ 80, 105]
-lr_gammas    = [0.1, 0.05]  
-
-
-
+multi_step_lr = False
+lr_drop_list = [33, 45]
 modelname = 'dino'
 frozen_weights = None
 backbone = 'swin_L_384_22k'
 use_checkpoint = True
-
 dilation = False
 position_embedding = 'sine'
 pe_temperatureH = 20
@@ -71,7 +67,7 @@ two_stage_class_embed_share = False
 two_stage_learn_wh = False
 two_stage_default_hw = 0.05
 two_stage_keep_all_tokens = False
-num_select = 150
+num_select = 300
 transformer_activation = 'relu'
 batch_norm_type = 'FrozenBatchNorm2d'
 masks = False
@@ -88,29 +84,22 @@ enc_loss_coef = 1.0
 interm_loss_coef = 1.0
 no_interm_box_loss = False
 focal_alpha = 0.25
-
-decoder_sa_type = 'sa' # ['sa', 'ca_label', 'ca_content']
-matcher_type = 'HungarianMatcher' # or SimpleMinsumMatcher
+decoder_sa_type = 'sa'
+matcher_type = 'HungarianMatcher'
 decoder_module_seq = ['sa', 'ca', 'ffn']
 nms_iou_threshold = -1
-
 dec_pred_bbox_embed_share = True
 dec_pred_class_embed_share = True
-
-# for dn
 use_dn = True
 dn_number = 100
 dn_box_noise_scale = 0.4
 dn_label_noise_ratio = 0.5
 embed_init_tgt = True
 dn_labelbook_size = 91
-
 match_unstable_error = True
-
-# for ema
-use_ema = True
+use_ema = False
 ema_decay = 0.9997
 ema_epoch = 0
-
 use_detached_boxes_dec_out = False
-
+window_size_h = 4
+window_size_w = 4
