@@ -25,3 +25,5 @@ slurm-*.err
 .coverage
 .venv/
 env/
+Histograms/
+Plots/

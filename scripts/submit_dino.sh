@@ -92,6 +92,8 @@ EOS
 
 # ------------------ Job absenden (Parameter direkt an sbatch) ------
 echo "[INFO] Submitting SLURM job… Output & logs: ${OUTPUT_DIR}"
+
+
 sbatch \
   --job-name="${JOB_NAME}" \
   --partition="${PARTITION}" \
@@ -99,6 +101,7 @@ sbatch \
   --cpus-per-task="${CPUS}" \
   --mem="${MEM}" \
   --time="${TIME_LIMIT}" \
+  --signal=B:USR1@120 \
   --output=/dev/null \
   --error=/dev/null \
   --requeue \
@@ -106,3 +109,4 @@ sbatch \
   "$SBATCH_FILE"
 
 rm -f "$SBATCH_FILE"
+

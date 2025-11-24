@@ -16,29 +16,56 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from matplotlib import pyplot as plt
+from typing import Optional, Callable, Iterable, Dict, Any
+import math, sys
 
 COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
           [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
-                    data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, max_norm: float = 0, 
-                    wo_class_error=False, lr_scheduler=None, args=None, logger=None, ema_m=None):
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+def train_one_epoch(
+    model: torch.nn.Module,
+    criterion: torch.nn.Module,
+    data_loader: Iterable,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch: int,
+    max_norm: float = 0.0,
+    wo_class_error: bool = False,
+    lr_scheduler=None,
+    args=None,
+    logger=None,
+    ema_m=None,
+    should_save_callback: Optional[Callable[[], bool]] = None,
+    save_callback: Optional[Callable[[str], None]] = None,
+    global_step: Optional[int] = None,
+) -> Dict[str, float]:
+    if global_step is None:
+        global_step = 0
+    """
+    Führt eine Trainings-Epoche aus.
+    - global_step wird pro Iteration inkrementiert und in resstat zurückgegeben.
+    - should_save_callback(): bool  -> wird innerhalb der Epoche regelmäßig abgefragt.
+    - save_callback(tag: str)       -> wird aufgerufen, wenn should_save_callback() True liefert.
+    """
+    # Sicherer Default für global_step
+    global_step = int(global_step) if global_step is not None else 0
+
+    scaler = torch.cuda.amp.GradScaler(enabled=getattr(args, "amp", False))
 
     try:
         need_tgt_for_training = args.use_dn
-    except:
+    except Exception:
         need_tgt_for_training = False
 
     model.train()
     criterion.train()
+
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     if not wo_class_error:
         metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
-    header = 'Epoch: [{}]'.format(epoch)
+    header = f'Epoch: [{epoch}]'
     print_freq = 10
 
     _cnt = 0
@@ -47,35 +74,35 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        with torch.cuda.amp.autocast(enabled=args.amp):
+        with torch.cuda.amp.autocast(enabled=getattr(args, "amp", False)):
             if need_tgt_for_training:
                 outputs = model(samples, targets)
             else:
                 outputs = model(samples)
-        
+
             loss_dict = criterion(outputs, targets)
             weight_dict = criterion.weight_dict
+            losses = sum(
+                loss_dict[k] * weight_dict[k]
+                for k in loss_dict.keys() if k in weight_dict
+            )
 
-            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-
-        # reduce losses over all GPUs for logging purposes
+        # Reduktion für Logging (auch bei DDP)
         loss_dict_reduced = utils.reduce_dict(loss_dict)
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
                                       for k, v in loss_dict_reduced.items()}
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
                                     for k, v in loss_dict_reduced.items() if k in weight_dict}
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
-
-        loss_value = losses_reduced_scaled.item()
+        loss_value = float(losses_reduced_scaled.item())
 
         if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
+            print(f"Loss is {loss_value}, stopping training")
             print(loss_dict_reduced)
             sys.exit(1)
 
-
-        # amp backward function
-        if args.amp:
+        # --- Optimizer Step (AMP / FP32) ---
+        if getattr(args, "amp", False):
             optimizer.zero_grad()
             scaler.scale(losses).backward()
             if max_norm > 0:
@@ -84,43 +111,68 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             scaler.step(optimizer)
             scaler.update()
         else:
-            # original backward function
             optimizer.zero_grad()
             losses.backward()
             if max_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
             optimizer.step()
 
-        if args.onecyclelr:
+        # Per-Iteration-Scheduler (OneCycleLR)
+        if getattr(args, "onecyclelr", False) and lr_scheduler is not None:
             lr_scheduler.step()
-        if args.use_ema:
-            if epoch >= args.ema_epoch:
+
+        # EMA
+        if getattr(args, "use_ema", False):
+            if epoch >= getattr(args, "ema_epoch", 0):
                 ema_m.update(model)
 
+        # Logging
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         if 'class_error' in loss_dict_reduced:
             metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
+        # --- global_step INKREMENTIEREN ---
+        global_step += 1
+
+        # --- Mid-Epoch-Save (nur Rank-0) ---
+        if should_save_callback is not None and save_callback is not None:
+            try:
+                if should_save_callback() and utils.is_main_process():
+                    tag = f"e{epoch:04}_it{global_step}"
+                    save_callback(tag)
+            except Exception as _e:
+                # bewusst nur loggen; Training darf nicht crashen
+                if logger is not None:
+                    logger.info(f"[mid-epoch save] skipped due to error: {_e}")
+
         _cnt += 1
-        if args.debug:
+        if getattr(args, "debug", False):
             if _cnt % 15 == 0:
                 print("BREAK!"*5)
                 break
 
+    # optionale, epiloge Anpassungen am Kriterium
     if getattr(criterion, 'loss_weight_decay', False):
         criterion.loss_weight_decay(epoch=epoch)
     if getattr(criterion, 'tuning_matching', False):
         criterion.tuning_matching(epoch)
 
-
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+
     resstat = {k: meter.global_avg for k, meter in metric_logger.meters.items() if meter.count > 0}
+    # global_step zurückgeben (für Checkpointing in main)
+    resstat['global_step'] = int(global_step)
+
     if getattr(criterion, 'loss_weight_decay', False):
-        resstat.update({f'weight_{k}': v for k,v in criterion.weight_dict.items()})
+        resstat.update({f'weight_{k}': v for k, v in criterion.weight_dict.items()})
+    metric_logger.synchronize_between_processes()
+    resstat = {k: meter.global_avg for k, meter in metric_logger.meters.items() if meter.count > 0}
+    resstat['global_step'] = int(global_step)
     return resstat
+
 
 def plot_results(pil_img, prob, boxes, output_dir, epoch):
     plt.figure(figsize=(16,10))
