@@ -1,3 +1,108 @@
+#!/bin/bash
+# File: $WORK/DINO/scripts/start_dino.sh
+# Robust start: setzt Env, findet letzten Checkpoint, startet Training.
+set -euo pipefail
+
+# --------- PARAMS (kommen von au�en per ENV) ----------
+OUTPUT_DIR="${OUTPUT_DIR:-$WORK/DINO/output/run_$(date +%Y%m%d-%H%M%S)}"
+CONFIG_FILE="${CONFIG_FILE:-config/DINO/DINO_4scale_swin.py}"
+WINDOW_H="${WINDOW_H:-4}"
+WINDOW_W="${WINDOW_W:-4}"
+BATCH_SIZE_ENV="${BATCH_SIZE_ENV:-}"
+
+echo "[INFO] OUTPUT_DIR: ${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}"
+
+# Logs ohne Buffer (schneller im File)
+export PYTHONUNBUFFERED=1
+
+# ---- Umgebung setzen ----
+source "$WORK/miniconda3/etc/profile.d/conda.sh"
+conda activate "$WORK/miniconda3/envs/dino"
+
+export CUDA_VER="${CUDA_VER:-11.8}"
+export CUDA_HOME="/usr/local/cuda-${CUDA_VER}"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/extras/CUPTI/lib64:${LD_LIBRARY_PATH:-}"
+
+# Pythonpfade f�r DINO (ops + repo-root)
+export PYTHONPATH="${PYTHONPATH:-}:$WORK/DINO/models/dino/ops"
+export PYTHONPATH="$WORK/DINO:${PYTHONPATH}"
+
+cd "$WORK/DINO"
+
+# ---- Resume-Logik ----
+RESUME_ARG=()
+if [ -f "${OUTPUT_DIR}/checkpoint.pth" ]; then
+  echo "[INFO] Found checkpoint: ${OUTPUT_DIR}/checkpoint.pth"
+  RESUME_ARG=(--resume "${OUTPUT_DIR}/checkpoint.pth")
+elif [ -n "${INITIAL_CHECKPOINT:-}" ] && [ -f "${INITIAL_CHECKPOINT}" ]; then
+  echo "[INFO] Using initial checkpoint: ${INITIAL_CHECKPOINT}"
+  RESUME_ARG=(--resume "${INITIAL_CHECKPOINT}")
+else
+  echo "[INFO] No checkpoint found; starting fresh."
+fi
+
+if [ -n "${BATCH_SIZE_ENV}" ]; then
+  echo "[INFO] Using BATCH_SIZE_ENV=${BATCH_SIZE_ENV}"
+fi
+
+# ---- Start: Single-GPU Distributed (standalone) ----
+# ---- Start: Single-GPU Distributed (standalone) ----
+LR_T0="${LR_T0:-10}"
+LR_TMULT="${LR_TMULT:-2}"
+LR_MIN="${LR_MIN:-1e-7}"
+SEED="${SEED:-42}"
+: "${FLATCOS:=1}"
+: "${LR_WARMUP_EPOCHS:=3}"
+: "${LR_HOLD_EPOCHS:=97}"
+: "${LR_COSINE_EPOCHS:=40}"
+: "${LR_WARMUP_START_FACTOR:=0.3}"
+: "${CFG_OPTS:=}"
+: "${PY_ARGS:=}"
+
+
+# Options, die in die Config gemergt werden (als Array, damit sauber gequotet)
+OPTS=()
+if [ -n "${EPOCHS:-}" ]; then
+  OPTS+=("epochs=${EPOCHS}")
+fi
+if [ -n "${BATCH_SIZE_ENV:-}" ]; then
+  OPTS+=("batch_size=${BATCH_SIZE_ENV}")
+fi
+
+echo "[INFO] OUTPUT_DIR: ${OUTPUT_DIR}"
+echo "[INFO] Using Flat→Hold→Cosine schedule (warmup=${LR_WARMUP_EPOCHS}, hold=${LR_HOLD_EPOCHS}, cosine=${LR_COSINE_EPOCHS}, lr_min=${LR_MIN}, seed=${SEED})"
+
+: "${CFG_OPTS:=}"   # key=val Paare für --options
+: "${PY_ARGS:=}"    # zusätzliche Python-Flags (--lr_mode, --flatcos, ...)
+
+SCHED_OPTS=()
+if [ "$FLATCOS" = "1" ]; then
+  SCHED_OPTS=( --flatcos
+               --lr_warmup_epochs "$LR_WARMUP_EPOCHS"
+               --lr_hold_epochs   "$LR_HOLD_EPOCHS"
+               --lr_cosine_epochs "$LR_COSINE_EPOCHS"
+               --lr_warmup_start_factor "$LR_WARMUP_START_FACTOR" )
+fi
+
+python -m torch.distributed.run \
+  --nproc_per_node=1 \
+  --standalone \
+  main.py \
+    --options \
+      "window_size_h=${WINDOW_H}" \
+      "window_size_w=${WINDOW_W}" \
+      ${CFG_OPTS} \
+      "${OPTS[@]}" \
+    --output_dir "${OUTPUT_DIR}" \
+    --device cuda \
+    --seed "${SEED}" \
+    "${RESUME_ARG[@]}" \
+    ${PY_ARGS}
+
+und das die lr drop logik vereinfacht wurde?:
+
 # -*- coding: utf-8 -*-
 # Copyright (c) 2022 IDEA. All Rights Reserved.
 # ------------------------------------------------------------------------
@@ -18,6 +123,8 @@ from util.get_param_dicts import get_param_dict
 from util.logger import setup_logger
 from util.slconfig import DictAction, SLConfig
 from util.utils import ModelEma, BestMetricHolder
+from util.evaluation import Evaluator, get_full_conf_results, recall_precision_curve_with_intensities
+from util.exp_preprocess import standard_preprocessing
 import util.misc as utils
 
 import datasets
@@ -31,22 +138,32 @@ import torch.multiprocessing as mp
 from gixdinference.evaluation import eval_on_dataset
 from gixdinference.configuration import Config
 from gixdinference.dataloader import H5GIWAXSDataset
-import torchvision
-from typing import Optional, Callable, Iterable, Dict, Any
-import math
-from torchvision.utils import save_image
-from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR, StepLR, CosineAnnealingWarmRestarts
-from torch.optim.lr_scheduler import (
-    ReduceLROnPlateau, MultiStepLR, StepLR, CosineAnnealingWarmRestarts
-)
 
+import math
 import signal
+from typing import Optional, Callable, Iterable, Dict, Any
+
+import torchvision
+from torchvision.utils import save_image
+from torchvision.ops import nms
+from torch.optim.lr_scheduler import (
+    ReduceLROnPlateau,
+    MultiStepLR,
+    StepLR,
+    CosineAnnealingWarmRestarts,
+)
 
 _GOT_SIGUSR1 = False
 def _on_sigusr1(signum, frame):
     global _GOT_SIGUSR1
     _GOT_SIGUSR1 = True
 
+
+def filter_non_elong(pred_boxes):
+    y_extent = pred_boxes[:, 3] - pred_boxes[:, 1]
+    x_extent = pred_boxes[:, 2] - pred_boxes[:, 0]
+    keep = x_extent * 1.15 < y_extent
+    return keep
 
 
 def box_xyxy_to_cxcywh(x):
@@ -67,9 +184,17 @@ class SimulationDataset(torch.utils.data.Dataset):
         slice_into_four = True
         image = None
         while image is None:
-            image, boxes, mask = self.simulation.simulate_img()
+            try:
+                image, boxes, mask = self.simulation.simulate_img()
+            except Exception:
+                # Wenn simulate_img() fehlschlägt, erneut versuchen
+                image = None
+                continue
 
-        image = image.repeat(1, 1, 1)
+        # Falls das Bild nur einen Kanal hat, für 3-Kanal-Modelle aufduplizieren
+        if image.shape[0] == 1:
+            image = image.repeat(3, 1, 1)
+
         num_objects = len(boxes[0:])
 
         area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
@@ -88,11 +213,9 @@ class SimulationDataset(torch.utils.data.Dataset):
         return image, target
 
     def __len__(self):
-        if args.evaluate:
-            return 3
         #number of images in epoch
-        #return 3
-        return 3500#0#0
+        return 1000
+
 def collate_fn(batch):
     # Initialize lists to hold the tensors
     samples = []
@@ -111,7 +234,7 @@ def collate_fn(batch):
 
     # Convert the lists to tensors
     samples = torch.stack(samples)
-
+    #targets = [{'boxes': torch.stack([t['boxes'] for t in targets])}]
     # Return a dictionary
     #return {'samples': samples, 'targets': targets}
     return samples, targets
@@ -250,12 +373,10 @@ def _save_ckpt(output_dir, weights, extra_tag=None):
 
 
 def main(args):
-    import os, sys, json, time
-    import util.misc as utils
-    from util.slconfig import SLConfig
-    from util.logger import setup_logger
-
-
+    #utils.init_distributed_mode(args)
+    dataset = SimulationDataset()
+    # load cfg file and update the args
+    print("Loading config file from {}".format(args.config_file))
     time.sleep(args.rank * 0.02)
 
     cfg = SLConfig.fromfile(args.config_file)
@@ -330,124 +451,68 @@ def main(args):
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
 
-    # ---- LR-Scheduler Imports (Flat+Cosine) ----
-    from torch.optim.lr_scheduler import (
-        ReduceLROnPlateau, MultiStepLR, StepLR,
-        CosineAnnealingLR
-    )
-    # Zusatz-Scheduler (falls vorhanden); wir fallbacken später sauber
-    try:
-        from torch.optim.lr_scheduler import LinearLR, ConstantLR, SequentialLR  # PyTorch ≥1.11
-    except Exception:
-        LinearLR = ConstantLR = SequentialLR = None
+    # ------------------------------------------------------------
+    # Lernraten-Scheduler (vereinfachte Variante)
+    # ------------------------------------------------------------
+    #
+    # Annahmen:
+    #  - wir unterstützen hier nur lr_mode == 'epoch'
+    #  - Multi-Step-Schedule wird über
+    #       multi_step_lr, lr_drop_list, lr_gammas
+    #    aus der Config gesteuert
+    #  - keine Plateau- oder Cosine-Scheduler mehr
+    #
+    lr_scheduler = None
+    plateau_sch = None  # nur für Kompatibilität mit Resume-Code
 
-
-    # Schutz: Keine Misch-Modi
-    if args.lr_mode != 'epoch' and (getattr(args, "onecyclelr", False) or getattr(args, "multi_step_lr", False)):
-        raise ValueError("lr_mode != 'epoch' darf nicht mit OneCycle/MultiStep kombiniert werden.")
-
-    lr_scheduler = None     # epoch-basierte Scheduler hier rein
-    plateau_sch = None      # ReduceLROnPlateau hier rein
-    onecycle_initialized = False  # wird (falls benutzt) pro-Epoch nach Loader-Erzeugung gesetzt
-
-    # Defaults für Flat+Cosine (falls Args nicht im Parser gesetzt sind)
-    flatcos = bool(getattr(args, "flatcos", False))
-    lr_warmup_epochs = int(getattr(args, "lr_warmup_epochs", 3))
-    lr_hold_epochs   = int(getattr(args, "lr_hold_epochs", 90))
-    lr_cosine_epochs = int(getattr(args, "lr_cosine_epochs", 37))
-    lr_warmup_start_factor = float(getattr(args, "lr_warmup_start_factor", 0.3))
-
-    if getattr(args, "onecyclelr", False):
-        # OneCycle wird nach Loader-Erzeugung initialisiert (siehe unten)
-        pass
-
-    elif args.lr_mode == 'plateau':
-        plateau_sch = ReduceLROnPlateau(
-            optimizer, mode='max', factor=args.lr_plateau_factor,
-            patience=args.lr_plateau_patience, cooldown=args.lr_cooldown,
-            min_lr=args.lr_min, threshold=1e-4, verbose=False
+    if args.lr_mode != 'epoch':
+        raise ValueError(
+            f"Dieses vereinfachte Setup unterstützt nur lr_mode='epoch', "
+            f"nicht lr_mode={args.lr_mode!r}."
         )
 
-    elif args.lr_mode == 'epoch':
-        # a) Flat→Cosine via native Scheduler, wenn verfügbar
-        if flatcos:
-            if LinearLR is not None and ConstantLR is not None and SequentialLR is not None:
-                warm = LinearLR(optimizer, start_factor=lr_warmup_start_factor, total_iters=lr_warmup_epochs)
-                hold = ConstantLR(optimizer, factor=1.0, total_iters=lr_hold_epochs)
-                cos  = CosineAnnealingLR(optimizer, T_max=lr_cosine_epochs, eta_min=args.lr_min)
-                lr_scheduler = SequentialLR(
-                    optimizer,
-                    schedulers=[warm, hold, cos],
-                    milestones=[lr_warmup_epochs, lr_warmup_epochs + lr_hold_epochs]
-                )
-            else:
-                # b) Fallback: eigener einfacher Flat→Cos Scheduler (PyTorch < 1.11)
-                import math
-                class _FlatCosScheduler(torch.optim.lr_scheduler._LRScheduler):
-                    def __init__(self, optimizer, warmup_e, hold_e, cos_e, warm_start, eta_min, last_epoch=-1):
-                        self.warmup_e = max(0, int(warmup_e))
-                        self.hold_e   = max(0, int(hold_e))
-                        self.cos_e    = max(1, int(cos_e))
-                        self.warm_start = float(warm_start)
-                        self.eta_min  = float(eta_min)
-                        super().__init__(optimizer, last_epoch)
+    # Sicherheitscheck: nicht beide Modi gleichzeitig
+    if getattr(args, "onecyclelr", False) and getattr(args, "multi_step_lr", False):
+        raise ValueError("onecyclelr und multi_step_lr dürfen nicht gleichzeitig True sein.")
 
-                    def get_lr(self):
-                        e = self.last_epoch + 1  # step() wird am EPOCH-Ende aufgerufen
-                        out = []
-                        for base in self.base_lrs:
-                            if e <= self.warmup_e:
-                                # linear warmup von warm_start*base → base
-                                a = e / max(1, self.warmup_e)
-                                lr = base * (self.warm_start + (1.0 - self.warm_start) * a)
-                            elif e <= self.warmup_e + self.hold_e:
-                                lr = base
-                            else:
-                                t = min(e - self.warmup_e - self.hold_e, self.cos_e)
-                                cos = 0.5 * (1.0 + math.cos(math.pi * t / self.cos_e))
-                                lr = self.eta_min + (base - self.eta_min) * cos
-                            out.append(lr)
-                        return out
+    if getattr(args, "multi_step_lr", False):
+        # Multi-Step-Schedule über lr_drop_list + (optional) lr_gammas
+        drops = list(getattr(args, "lr_drop_list", []))
+        gammas = list(getattr(args, "lr_gammas", [])) if hasattr(args, "lr_gammas") else None
 
-                lr_scheduler = _FlatCosScheduler(
-                    optimizer,
-                    warmup_e=lr_warmup_epochs,
-                    hold_e=lr_hold_epochs,
-                    cos_e=lr_cosine_epochs,
-                    warm_start=lr_warmup_start_factor,
-                    eta_min=args.lr_min,
-                )
+        if drops and gammas:
+            if len(gammas) != len(drops):
+                raise ValueError("lr_gammas muss gleich lang sein wie lr_drop_list.")
 
-        elif getattr(args, "multi_step_lr", False):
-            drops = list(getattr(args, "lr_drop_list", []))
-            gammas = list(getattr(args, "lr_gammas", [])) if hasattr(args, "lr_gammas") else None
+            # Wir verwenden MultiplicativeLR und wenden Gamma NUR in der Drop-Epoche an.
+            drop_map = {int(t): float(g) for t, g in zip(drops, gammas)}
 
-            if drops and gammas:
-                if len(gammas) != len(drops):
-                    raise ValueError("lr_gammas muss gleich lang sein wie lr_drop_list.")
-                # wende Gamma NUR in der exakten Drop-Epoche an, sonst 1.0
-                drop_map = {int(t): float(g) for t, g in zip(drops, gammas)}
-                def oneoff(epoch: int):
-                    # epoch entspricht last_epoch in PyTorch; Drop wirkt ab nächster Epoche
-                    return drop_map.get(int(epoch), 1.0)
-                lr_scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=oneoff)
-            elif drops:
-                gamma = float(getattr(args, "lr_gamma", 0.1))
-                lr_scheduler = MultiStepLR(optimizer, milestones=drops, gamma=gamma)
-            else:
-                gamma = float(getattr(args, "lr_gamma", 0.1))
-                lr_scheduler = StepLR(optimizer, step_size=args.lr_drop, gamma=gamma)
+            def oneoff(epoch: int):
+                # epoch entspricht intern last_epoch; für alle anderen Epochen Faktor 1.0
+                return drop_map.get(int(epoch), 1.0)
+
+            lr_scheduler = torch.optim.lr_scheduler.MultiplicativeLR(
+                optimizer, lr_lambda=oneoff
+            )
+
+        elif drops:
+            # klassischer MultiStepLR mit einem gemeinsamen Gamma
+            gamma = float(getattr(args, "lr_gamma", 0.1))
+            lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer, milestones=drops, gamma=gamma
+            )
 
         else:
-            # Konstante LR ist erlaubt (kein Crash)
-            lr_scheduler = None
-
-    elif args.lr_mode == 'metric':
-        # eigener fester Schwellwert wäre hier zu implementieren; derzeit kein Scheduler
-        pass
+            # Fallback: einfacher StepLR mit lr_drop
+            step_size = int(getattr(args, "lr_drop", args.epochs))
+            gamma = float(getattr(args, "lr_gamma", 0.1))
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=step_size, gamma=gamma
+            )
 
     else:
-        raise ValueError("Inkompatible LR-Optionen/Scheduler-Kombination.")
+        # Kein LR-Scheduling: konstante Lernrate über alle Epochen
+        lr_scheduler = None
 
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
@@ -555,8 +620,15 @@ def main(args):
     def _get_lr(opt):
         return opt.param_groups[0]['lr']
 
+    shutil.copy(os.path.dirname(os.path.realpath(__file__)) + '/simulation.py', output_dir / 'simulation.py')
+
+    with open(output_dir / 'settings.txt', 'a+') as f:
+            f.write('\n' + str(model))
+            f.write('\n' + str(args))
+
     print("Start training")
     start_time = time.time()
+
     #best_map_holder = BestMetricHolder(use_ema=args.use_ema)
     if args.evaluate:
         args.start_epoch = 1
@@ -564,24 +636,11 @@ def main(args):
         dataset = SimulationDataset()
         data_loader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=1,
+            batch_size=2,
             shuffle=True,
             num_workers=0,
             collate_fn=collate_fn
         )
-        # OneCycleLR ggf. hier initialisieren, sobald wir steps_per_epoch kennen
-        if getattr(args, "onecyclelr", False) and not onecycle_initialized:
-            lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=args.lr,
-                steps_per_epoch=len(data_loader),
-                epochs=args.epochs,
-                pct_start=0.2
-            )
-            onecycle_initialized = True
-            sched_last = getattr(plateau_sch if plateau_sch is not None else lr_scheduler, "last_epoch", None)
-            logger.info(f"[epoch {epoch}] start lr={_get_lr(optimizer):.3e} (sched.last_epoch={sched_last})")
-
 
         epoch_start_time = time.time()
         logger.info(f"[epoch {epoch}] start lr={_get_lr(optimizer):.3e}")
@@ -625,18 +684,21 @@ def main(args):
             global_step=global_step,
         )
         global_step = int(train_stats.get('global_step', global_step))
-
        
         # eval
         with open(output_dir / 'training_stats.txt', 'a+') as f:
             f.write('epoch: ' + str(epoch) + str(train_stats) + "\n")
         with open(output_dir  / 'bbox_loss.txt', 'a+') as f:
             f.write('epoch: ' + str(epoch) + ' loss_bbox: ' + str(train_stats['loss_bbox']) + "\n")
+
         evaluate(
             model, criterion, postprocessors, data_loader, dataset, device, args.output_dir, epoch,
             wo_class_error=wo_class_error, args=args, logger=(logger if args.save_log else None)
         )
         
+        with open(output_dir  / 'loss_giou.txt', 'a+') as f:
+            f.write('epoch: ' + str(epoch) + ' loss_giou: ' + str(train_stats['loss_giou']) + "\n")
+
         class ImageProcessing():
 
             def __init__(self, model, postprocessors) -> None:
@@ -645,10 +707,9 @@ def main(args):
 
             def infer(self, img: np.array, k: int = None) -> bool:
                 img = Tensor(img).cuda()
-                #img = img[0][0].repeat(1, 2, 1, 1)
-                #img[0][1] = torch.mean(img[0][0], dim=0, keepdim=True)[0]
+
                 raw_results = self.model(img)
-                postprocessed =  self.postprocessors['bbox'](raw_results, torch.Tensor([[512, 1024]]).cuda())
+                postprocessed =  self.postprocessors['bbox'](raw_results, torch.Tensor([[512, 512]]).cuda())
                 scores = postprocessed[0]['scores']
                 boxes = postprocessed[0]['boxes']
                 return boxes.cpu(), scores.cpu()
@@ -671,28 +732,14 @@ def main(args):
         val_metric = float(max(quazi_recall, polar_recall))
         logger.info(f"[epoch {epoch}] val_quazi={float(quazi_recall):.4f} | val_polar={float(polar_recall):.4f} | chosen_val_metric={val_metric:.4f}")
 
-        if plateau_sch is not None:
+        if lr_scheduler is not None:
             before = _get_lr(optimizer)
-            plateau_sch.step(val_metric)  # triggert ggf. Drop gemäß patience/cooldown
+            lr_scheduler.step()
             after = _get_lr(optimizer)
             if after < before - 1e-15:
-                logger.info(
-                    f"[LR DROP][epoch {epoch}] mode=plateau "
-                    f"(patience={args.lr_plateau_patience}, factor={args.lr_plateau_factor}) "
-                    f"metric={val_metric:.4f} | lr: {before:.3e} -> {after:.3e}"
-                )
+                logger.info(f"[LR DROP][epoch {epoch}] mode=epoch | lr: {before:.3e} -> {after:.3e}")
             else:
-                logger.info(f"[LR KEEP][epoch {epoch}] metric={val_metric:.4f} | lr: {after:.3e}")
-        else:
-            # klassische epoch-basierte Scheduler (Step/MultiStep) einmal pro Epoche
-            if lr_scheduler is not None and not getattr(args, "onecyclelr", False):
-                before = _get_lr(optimizer)
-                lr_scheduler.step()
-                after = _get_lr(optimizer)
-                if after < before - 1e-15:
-                    logger.info(f"[LR DROP][epoch {epoch}] mode=epoch | lr: {before:.3e} -> {after:.3e}")
-                else:
-                    logger.info(f"[LR STEP][epoch {epoch}] lr: {after:.3e}")
+                logger.info(f"[LR STEP][epoch {epoch}] lr: {after:.3e}")
         
         if args.output_dir:
             scheduler_to_save = plateau_sch if plateau_sch is not None else lr_scheduler
@@ -706,73 +753,6 @@ def main(args):
                 _save_ckpt(output_dir, weights, extra_tag=f"e{epoch:04}")
 
 
-        """ config.PREPROCESSING_QUAZIPOLAR = True
-        eval_recall = eval_on_dataset(config, None, img_process, eval_dataset_quazi) """
-
-        """ map_regular = test_stats['coco_eval_bbox'][0]
-        _isbest = best_map_holder.update(map_regular, epoch, is_ema=False)
-        if _isbest:
-            checkpoint_path = output_dir / 'checkpoint_best_regular.pth'
-            utils.save_on_master({
-                'model': model_without_ddp.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'lr_scheduler': lr_scheduler.state_dict(),
-                'epoch': epoch,
-                'args': args,
-            }, checkpoint_path)
-        log_stats = {
-            **{f'train_{k}': v for k, v in train_stats.items()},
-            **{f'test_{k}': v for k, v in test_stats.items()},
-        }
-
-        # eval ema
-        if args.use_ema:
-            ema_test_stats, ema_coco_evaluator = evaluate(
-                ema_m.module, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir,
-                wo_class_error=wo_class_error, args=args, logger=(logger if args.save_log else None)
-            )
-            log_stats.update({f'ema_test_{k}': v for k,v in ema_test_stats.items()})
-            map_ema = ema_test_stats['coco_eval_bbox'][0]
-            _isbest = best_map_holder.update(map_ema, epoch, is_ema=True)
-            if _isbest:
-                checkpoint_path = output_dir / 'checkpoint_best_ema.pth'
-                utils.save_on_master({
-                    'model': ema_m.module.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, checkpoint_path)
-        log_stats.update(best_map_holder.summary())"""
-
-        """ep_paras = {
-                'epoch': epoch,
-                'n_parameters': n_parameters
-            }
-        log_stats.update(ep_paras)"""
-        """try:
-            log_stats.update({'now_time': str(datetime.datetime.now())})
-        except:
-            pass
-        
-        epoch_time = time.time() - epoch_start_time
-        epoch_time_str = str(datetime.timedelta(seconds=int(epoch_time)))
-        log_stats['epoch_time'] = epoch_time_str
-
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-            # for evaluation logs
-            if coco_evaluator is not None:
-                (output_dir / 'eval').mkdir(exist_ok=True)
-                if "bbox" in coco_evaluator.coco_eval:
-                    filenames = ['latest.pth']
-                    if epoch % 50 == 0:
-                        filenames.append(f'{epoch:03}.pth')
-                    for name in filenames:
-                        torch.save(coco_evaluator.coco_eval["bbox"].eval,
-                                   output_dir / "eval" / name)"""
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
@@ -785,31 +765,38 @@ def main(args):
             print("Removing: {}".format(filename))
             remove(filename)
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
 
     # Harmonisierung beider Flags
     args.evaluate = bool(getattr(args, "evaluate", False) or getattr(args, "eval", False))
-    args.eval = args.evaluate  # falls Code an anderer Stelle args.eval erwartet
+    args.eval = args.evaluate
 
-    if os.path.isfile(args.output_dir + '/checkpoint.pth'):
-        args.resume = args.output_dir + '/checkpoint.pth'
+    # Wenn im angegebenen output_dir bereits ein checkpoint.pth liegt: daraus resumin
+    ckpt_in_output = os.path.join(args.output_dir, 'checkpoint.pth')
+    if os.path.isfile(ckpt_in_output):
+        args.resume = ckpt_in_output
 
-    #args.resume = '/mnt/qb/work/schreiber/szb559/trainingoutputs/hdefdetr20240925-135258/checkpoint.pth'
-    
-    if os.path.isdir('\\'.join(args.resume.split('\\')[0:-1])):
-        args.output_dir ='\\'.join(args.resume.split('\\')[0:-1])
+    # Wenn resume gesetzt ist, output_dir auf den Checkpoint-Ordner setzen
+    if getattr(args, "resume", None):
+        resume_dir = os.path.dirname(args.resume)
+        if os.path.isdir(resume_dir):
+            args.output_dir = resume_dir
 
-    args.export = False
-
-    root = '/mnt/lustre/work/schreiber/szb559/trainingoutputs'
+    # Falls kein sinnvoller output_dir gesetzt ist: automatisch einen unter deinem Lustre-Root anlegen
+    if not args.output_dir:
+        root = '/mnt/lustre/work/schreiber/szb559/trainingoutputs'
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        args.output_dir = os.path.join(root, f'dinodetr{timestamp}')
 
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-        
+
+    args.export = False
+
     print(args.output_dir)
+    main(args)
 
     main(args)
     

@@ -15,31 +15,25 @@ from torch import Tensor
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchvision.utils import draw_bounding_boxes
-from torchvision.ops import nms
-# from torchvision.ops import masks_to_boxes
-
+from torchvision.ops import nms, masks_to_boxes
 import torchvision
 from math import pi, sin, cos
+from dataclasses import dataclass
+
+
+""" from gixd_detectron.img_processing import (
+    normalize,
+    torch_he,
+    with_probability
+)
+
+from gixd_detectron.noise import perlin
+
+from gixd_detectron.simulations.angle_limits import AngleLimits
+from gixd_detectron.simulations.misc import clamp_boxes """
 
 HEIGHT = 512
 WIDTH = 1024
-
-def masks_to_boxes(masks):
-    # vectorized implementation of masks_to_boxes
-    if masks.numel() == 0:
-        return torch.zeros((0, 4), device=masks.device, dtype=torch.float)
-
-    h, w = masks.shape[-2:]
-    y = torch.arange(0, h, dtype=torch.float, device=masks.device).view(h, 1).expand(h, w)
-    x = torch.arange(0, w, dtype=torch.float, device=masks.device).view(1, w).expand(h, w)
-
-    x_mask = masks * x
-    y_mask = masks * y
-    x_min = x_mask.masked_fill(~masks.bool(), float('inf')).flatten(1).min(dim=1)[0]
-    x_max = x_mask.max(dim=1)[0]
-    y_min = y_mask.masked_fill(~masks.bool(), float('inf')).flatten(1).min(dim=1)[0]
-    y_max = y_mask.max(dim=1)[0]
-    return torch.stack([x_min, y_min, x_max, y_max], 1)
 
 def normalize(img: Union[Tensor, np.ndarray]) -> Union[Tensor, np.ndarray]:
     return (img - img.min()) / (img.max() - img.min())
@@ -156,13 +150,14 @@ class AngleLimits(object):
         self._quazipolar = False
         self._quazipolar_coef = random.uniform(*self._quazipolar_range)
 
-
-class SimulationConfig(NamedTuple):
+@dataclass
+class SimulationConfig():
     
-    obj_num: tuple = (2, 100)
+    obj_num: tuple = (2, 200)
     width_central: tuple = (1., 5.)
+    ring_width_central: tuple = (2., 15.)
     widths_std: float = 150
-    pos: tuple = (.137*WIDTH, .98*WIDTH)
+    pos: tuple = (.048*WIDTH, .98*WIDTH)
     a_pos: tuple = (0, 1.1*HEIGHT)
     a_seg_widths_central: tuple = (.1, 10.)
     a_seg_widths_std: float = 50
@@ -179,7 +174,7 @@ class SimulationConfig(NamedTuple):
     poisson_range: tuple = (50, .78*WIDTH)
     a_coef: float = 3.5
     w_coef: float = 1#1.5
-    add_hot_pixels: bool = True
+    add_hot_pixels: bool = False
     hot_pixels_range: tuple = (-2., 3.)
     hot_pixels_p: float = 0.001
     hot_pixels_prob: float = 0.2
@@ -188,8 +183,8 @@ class SimulationConfig(NamedTuple):
 
 class FastSimulation(object):
     def __init__(self, sim_config: SimulationConfig = None, device: torch.device = 'cuda'):
-        
 
+        self.background_img = None
         self.device = device
         self.x = torch.arange(WIDTH, device=device)[None, :, None]
         self.y = torch.arange(HEIGHT, device=device)[:, None, None]
@@ -211,7 +206,16 @@ class FastSimulation(object):
         self.ws = 0
 
     @torch.no_grad()
-    def simulate_img(self):
+    def simulate_img(self, background_img = None):
+
+        self.background_img = background_img
+
+        if self.background_img is not None:
+            self.sim_config.ring_intensity_range: tuple = (45, 50)
+            self.sim_config.seg_intensity_range: tuple = (48, 50)
+        else:
+            self.sim_config.ring_intensity_range: tuple = (2, 50)
+            self.sim_config.seg_intensity_range: tuple = (10, 50)
 
         global WIDTH
         if random.random() < 0.5:
@@ -245,12 +249,13 @@ class FastSimulation(object):
         # add background
         #img = background_perlin(img)
      
-        img = add_glass(img, self.x, self.y)
-        img = add_linear_background(img)
+        if self.background_img is None:
+            img = add_glass(img, self.x, self.y)
+            img = add_linear_background(img)
 
         # add noise
-        img = apply_poisson_noise(img, self.sim_config.poisson_range)
-        img = add_perlin_noise(img)
+            img = apply_poisson_noise(img, self.sim_config.poisson_range)
+        #img = add_perlin_noise(img)
         # img = apply_speckle_noise(img)
         #img = apply_stretch(img)
         if self.polar_dark_area:
@@ -260,19 +265,16 @@ class FastSimulation(object):
         if img.min() == img.max():
             return self.simulate_img()
 
-        # apply kernels & contrast correction
-        img = apply_log(img)
-        img = apply_he(img)
-        img = apply_clip_img(img)
-        img = apply_kernel(img, self.kernel1)
-        img = digitalize_img(img)
+        #import matplotlib.pyplot as plt
+        #fig, ax = plt.subplots()
+        #ax.bar(x=torch.histogram(img)[1][:-1], height=torch.histogram(img)[0])
+        #fig.savefig('/home/constantin/git_repos/DINO/hist.png')
 
         # add masks
         img, mask = self.add_dark_area(img, boxes)
         img, mask = self.apply_detector_gaps(img, mask)
 
         # deteriorate contrast
-
         if self.sim_config.add_hot_pixels:
             img = add_hot_pixels(
                 img,
@@ -281,15 +283,30 @@ class FastSimulation(object):
                 prob=self.sim_config.hot_pixels_prob,
             )
 
-        # rescale intensities to [0, 1]
-        img = normalize(img)
-
         # add salt & pepper noise
         img = apply_salt_pepper_noise(img, self.sim_config.p_ps_noise)
 
-        img, boxes, mask = flip_image(img, boxes, mask)
 
-        return img, boxes, mask
+        
+        
+        clahe_img = img
+        # apply kernels & contrast correction
+        clahe_img = apply_log(clahe_img)
+        clahe_img = apply_he(clahe_img)
+        clahe_img = apply_clip_img(clahe_img)
+        clahe_img = apply_kernel(clahe_img, self.kernel1)
+        clahe_img = digitalize_img(clahe_img)
+
+        clahe_img = normalize(clahe_img)
+
+        if self.background_img is not None:
+            clahe_img = clahe_img + self.background_img
+            clahe_img = normalize(clahe_img)
+            boxes = torch.cat([boxes, Tensor([[116,0,128,512]]).cuda()])
+
+        clahe_img, boxes, mask = flip_image(clahe_img, boxes, mask)        
+
+        return clahe_img, boxes, mask
 
     @torch.no_grad()
     def simulate_boxes(self):
@@ -302,46 +319,53 @@ class FastSimulation(object):
 
         sc = self.sim_config
 
-        ring_pos, ring_widths, ring_a_pos, ring_a_widths = simulate_labels(
-            sc.obj_num,
-            sc.pos, sc.width_central, sc.widths_std,
-            sc.a_pos, sc.a_ring_widths_central, sc.a_ring_widths_std,
-            self.device
-        )
+        rings_or_seg_or_both = random.random()
 
-        ring_pos, ring_widths, ring_a_pos, ring_a_widths, _ = filter_nms(
-            ring_pos, ring_widths, ring_a_pos, ring_a_widths, self.sim_config.min_nms
-        )
 
-        ring_intensities = gen_intensities(
-            ring_pos, ring_widths, ring_a_pos, ring_a_widths, self.sim_config.ring_intensity_range
-        )
 
-        seg_pos, seg_widths, seg_a_pos, seg_a_widths = simulate_labels(
-            sc.obj_num,
-            sc.pos, sc.width_central, sc.widths_std,
-            sc.a_pos, sc.a_seg_widths_central, sc.a_seg_widths_std,
-            self.device
-        )
+        def simulate_and_process(obj_num, pos_c, width_c, width_std, a_pos_c, a_width_c, a_width_std, intensity_range, is_segment=False):
+            pos, widths, a_pos, a_widths = simulate_labels(
+                obj_num, sc.pos, width_c, width_std,
+                sc.a_pos, a_width_c, a_width_std, self.device
+            )
+            if is_segment:
+                a_widths = torch.maximum(a_widths, widths * (torch.rand_like(widths) + 1.0))
+            pos, widths, a_pos, a_widths, _ = filter_nms(pos, widths, a_pos, a_widths, sc.min_nms)
+            intensities = gen_intensities(pos, widths, a_pos, a_widths, intensity_range)
+            return pos, widths, a_pos, a_widths, intensities
 
-        seg_a_widths = torch.maximum(
-            seg_a_widths, seg_widths * (torch.rand_like(seg_widths) + 1.)
-        )
+        ring_pos = ring_widths = ring_a_pos = ring_a_widths = ring_intensities = torch.empty(0, device=self.device)
+        seg_pos = seg_widths = seg_a_pos = seg_a_widths = seg_intensities = torch.empty(0, device=self.device)
 
-        seg_pos, seg_widths, seg_a_pos, seg_a_widths, _ = filter_nms(
-            seg_pos, seg_widths, seg_a_pos, seg_a_widths, self.sim_config.min_nms
-        )
+        if rings_or_seg_or_both < 1/3:
+            ring_pos, ring_widths, ring_a_pos, ring_a_widths, ring_intensities = simulate_and_process(
+                sc.obj_num, sc.ring_width_central, sc.ring_width_central, sc.widths_std,
+                sc.a_ring_widths_central, sc.a_ring_widths_central, sc.a_ring_widths_std,
+                sc.ring_intensity_range
+            )
+        elif rings_or_seg_or_both < 2/3:
+            seg_pos, seg_widths, seg_a_pos, seg_a_widths, seg_intensities = simulate_and_process(
+                sc.obj_num, sc.width_central, sc.width_central, sc.widths_std,
+                sc.a_seg_widths_central, sc.a_seg_widths_central, sc.a_seg_widths_std,
+                sc.seg_intensity_range, is_segment=True
+            )
+        else:
+            ring_pos, ring_widths, ring_a_pos, ring_a_widths, ring_intensities = simulate_and_process(
+                sc.obj_num, sc.ring_width_central, sc.ring_width_central, sc.widths_std,
+                sc.a_ring_widths_central, sc.a_ring_widths_central, sc.a_ring_widths_std,
+                sc.ring_intensity_range
+            )
+            seg_pos, seg_widths, seg_a_pos, seg_a_widths, seg_intensities = simulate_and_process(
+                sc.obj_num, sc.width_central, sc.width_central, sc.widths_std,
+                sc.a_seg_widths_central, sc.a_seg_widths_central, sc.a_seg_widths_std,
+                sc.seg_intensity_range, is_segment=True
+            )
 
-        seg_intensities = gen_intensities(
-            seg_pos, seg_widths, seg_a_pos, seg_a_widths, self.sim_config.seg_intensity_range
-        )
-
-        pos, widths, a_pos, a_widths = (
-            torch.cat([ring_pos, seg_pos]),
-            torch.cat([ring_widths, seg_widths]),
-            torch.cat([ring_a_pos, seg_a_pos]),
-            torch.cat([ring_a_widths, seg_a_widths]),
-        )
+        pos      = torch.cat([ring_pos, seg_pos])
+        widths   = torch.cat([ring_widths, seg_widths])
+        a_pos    = torch.cat([ring_a_pos, seg_a_pos])
+        a_widths = torch.cat([ring_a_widths, seg_a_widths])
+        intensities = torch.cat([ring_intensities, seg_intensities])
 
         is_ring= torch.cat([torch.ones(ring_pos.size()[0], dtype=torch.bool, device=self.device), torch.zeros(seg_pos.size()[0], dtype=torch.bool, device=self.device)])
 
@@ -351,7 +375,7 @@ class FastSimulation(object):
         )
 
         is_ring = is_ring[indices]
-        intensities = torch.cat([ring_intensities, seg_intensities], dim=0)[indices]
+        intensities = intensities[indices]
 
         boxes = self._boxes_from_positions(pos, widths, a_pos, a_widths)
         #boxes = clamp_boxes(boxes)
@@ -393,6 +417,17 @@ class FastSimulation(object):
 
         clamp_boxes(boxes)
 
+        
+
+
+
+        # if random.random() <= 1:
+        #     total_num = intensities.shape[0]
+        #     if total_num <= 5:
+        #         return
+        #     bright_peaks = np.random.choice(np.arange(total_num), 4, replace=False)
+        #     intensities[bright_peaks] *= 100
+
 
 
         return boxes, intensities, is_ring
@@ -408,7 +443,7 @@ class FastSimulation(object):
 
     def add_peaks_on_rings(self, x_position, widths, boxes, ring_intensities):
         #no peaks on rings
-        if random.random() > .4:
+        if random.random() > .1:
             return None, None, None, None, None
         
         else:
@@ -592,7 +627,6 @@ class FastSimulation(object):
         a_widths_big_enough = a_widths > 1.6
         indices_outside_image = widths_big_enough & a_widths_big_enough
 
-
         random_nr = random.random()
         #return without polar dark areas
         if random_nr > 0:
@@ -611,7 +645,7 @@ class FastSimulation(object):
             min_angle = self.sim_config.min_angle
             polar_indices = (widths >= min_angle) & (angles - boxes[:, 1] > - widths / 2) & (angles < boxes[:, 3])
 
-            if random_nr > .5:
+            if random_nr > .5 and self.background_img is None:
                 #remove boxes in quazipolar region
                 self.polar_dark_area = False
                 self.linear_dark_area = False
@@ -698,8 +732,7 @@ class FastSimulation(object):
     def filter_peaks_detector_gap(self, boxes_peaks_on_rings):
         if self.detector_mask:
             boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)        
-            m = (self.idx_black.bool() & boxes_as_masks.bool())
-            peaks_not_in_gap = torch.logical_not(torch.any(torch.any(m, dim=2), dim=1))
+            return torch.logical_not(torch.any(self.idx_black & boxes_as_masks, dim=(1,2)))
         return torch.ones(size=(len(boxes_peaks_on_rings),), dtype=torch.bool ,device=self.device)
 
 
@@ -746,7 +779,8 @@ def simulate_labels(
         pos, width_central_range, widths_std,
         a_pos, a_widths_central_range, a_widths_std, device = 'cuda'
 ):
-    n = random.randint(*obj_num)
+    lower_b, upper_b = obj_num
+    n = int(max(lower_b, min(random.gauss(lower_b + 0.75 * (upper_b - lower_b), (upper_b - lower_b) / 1), upper_b)))
 
     width_central = random.uniform(*width_central_range)
     width_central = random.paretovariate(3)
@@ -938,7 +972,10 @@ def add_glass_not_normalized(img, x, y, pos_range: tuple = (40, 300)):
 @with_probability(0.9)
 def add_linear_background(img):
     start, end = np.random.uniform(0, 0.1, 2)
-    return normalize(img) + torch.linspace(start, end, WIDTH, device=img.device)[None].repeat(HEIGHT, 1)
+    #dark_area = torch.zeros(HEIGHT, WIDTH, device=img.device)
+    #dark_area[:int(np.clip(HEIGHT*random.random()*1.5, 0, HEIGHT)), :] = 1
+    noise = torch.linspace(start, end, WIDTH, device=img.device)[None].repeat(HEIGHT, 1)# *dark_area
+    return normalize(img) + noise
 
 
 

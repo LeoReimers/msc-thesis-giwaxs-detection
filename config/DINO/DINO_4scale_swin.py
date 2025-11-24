@@ -2,7 +2,6 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-# --- Optimizer / Schedule ---
 lr = 2e-05                     # Start-LR = 5.0e-05
 lr_backbone = 2e-06            # optional: ~0.1 * lr (vorher: 1e-06)
 param_dict_type = 'default'
@@ -72,7 +71,7 @@ two_stage_class_embed_share = False
 two_stage_learn_wh = False
 two_stage_default_hw = 0.05
 two_stage_keep_all_tokens = False
-num_select = 300
+num_select = 150
 transformer_activation = 'relu'
 batch_norm_type = 'FrozenBatchNorm2d'
 masks = False
