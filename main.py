@@ -709,7 +709,7 @@ def main(args):
                 img = Tensor(img).cuda()
 
                 raw_results = self.model(img)
-                postprocessed =  self.postprocessors['bbox'](raw_results, torch.Tensor([[512, 512]]).cuda())
+                postprocessed =  self.postprocessors['bbox'](raw_results, torch.Tensor([[512, 1024]]).cuda())
                 scores = postprocessed[0]['scores']
                 boxes = postprocessed[0]['boxes']
                 return boxes.cpu(), scores.cpu()
