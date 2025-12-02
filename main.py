@@ -166,6 +166,9 @@ def get_args_parser():
     parser.add_argument("--local_rank", type=int, help='local rank for DistributedDataParallel')
     parser.add_argument('--amp', action='store_true',
                         help="Train with mixed precision")
+    parser.add_argument('--frozen_weights', default=None, type=str)
+    parser.add_argument('--masks', action='store_true')
+
     
     return parser
 
@@ -249,6 +252,7 @@ def main(args):
     logger.info('rank: {}'.format(args.rank))
     logger.info('local_rank: {}'.format(args.local_rank))
     logger.info("args: " + str(args) + '\n')
+    signal.signal(signal.SIGUSR1, _on_sigusr1)
 
 
     if args.frozen_weights is not None:
@@ -284,11 +288,10 @@ def main(args):
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
     
-
-    if args.onecyclelr:
-        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(data_loader_train), epochs=args.epochs, pct_start=0.2)
-    elif args.multi_step_lr:
-        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_drop_list)
+    if getattr(args, "multi_step_lr", False):
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=args.lr_drop_list
+        )
     else:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
@@ -388,20 +391,6 @@ def main(args):
                 ema_m = ModelEma(model, args.ema_decay)        
 
 
-    if args.eval:
-        os.environ['EVAL_FLAG'] = 'TRUE'
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir, wo_class_error=wo_class_error, args=args)
-        if args.output_dir:
-            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
-
-        log_stats = {**{f'test_{k}': v for k, v in test_stats.items()} }
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-        return
-
     shutil.copy(os.path.dirname(os.path.realpath(__file__)) + '/simulation.py', output_dir / 'simulation.py')
 
     with open(output_dir / 'settings.txt', 'a+') as f:
@@ -474,8 +463,9 @@ def main(args):
             f.write('epoch: ' + str(epoch) + ' loss_giou: ' + str(train_stats['loss_giou']) + "\n")
 
         # LR-Scheduler pro Epoche updaten (wie vorher)
-        if lr_scheduler is not None and not getattr(args, 'onecyclelr', False):
+        if lr_scheduler is not None:
             lr_scheduler.step()
+
 
         # Am Ende der Epoche Haupt-Checkpoint speichern
         if args.output_dir:
@@ -495,6 +485,7 @@ def main(args):
 
         # --- Dein GIWAXS-Eval-Block bleibt UNVERÄNDERT dahinter ---
         class ImageProcessing():
+
             def __init__(self, model, postprocessors) -> None:
                 self.model = model
                 self.postprocessors = postprocessors
@@ -502,23 +493,60 @@ def main(args):
             def infer(self, img: np.array, k: int = None) -> bool:
                 img = Tensor(img).cuda()
                 raw_results = self.model(img)
-                postprocessed = self.postprocessors['bbox'](
-                    raw_results, torch.Tensor([[512, 512]]).cuda()
-                )
+                postprocessed =  self.postprocessors['bbox'](raw_results, torch.Tensor([[512, 512]]).cuda())
                 scores = postprocessed[0]['scores']
                 boxes = postprocessed[0]['boxes']
                 return boxes.cpu(), scores.cpu()
-
+            
         img_process = ImageProcessing(model, postprocessors)
+
+        def eval_ap_func(dset_path, epoch, output_dir):
+            config = Config()
+            config.EVAL_EPOCH = str(epoch)
+            config.EVAL_OUTPUT_FOLDER = str(output_dir)
+            config.INPUT_DATASET = dset_path
+            config.PREPROCESSING_POLAR_SHAPE = [512,1024]
+            config.PREPROCESSING_LINEAR_CONTRAST = True
+            config.PREPROCESSING_LINEAR_PERC_977 = False
+            data = H5GIWAXSDataset(config, path = dset_path, preprocess_func=standard_preprocessing , buffer_size=5)   
+            evaluator = Evaluator()
+
+            for i, giwaxs_img_container in enumerate(data.iter_images()):
+
+                giwaxs_img = giwaxs_img_container.converted_polar_image
+                giwaxs_img = torch.tensor(giwaxs_img[:,0,:,:]).unsqueeze(0).cuda().repeat(1,3,1,1)
+                raw_giwaxs_img = giwaxs_img_container.raw_polar_image
+                labels = giwaxs_img_container.polar_labels
+                outputs = model(giwaxs_img)
+
+                postprocessed =  postprocessors['bbox'](outputs, torch.Tensor([[512, 1024]]).cuda())
+                
+                scores = postprocessed[0]['scores']
+                pred_boxes = postprocessed[0]['boxes']
+
+                idx_keep = nms(pred_boxes, scores, 0.4)
+                pred_boxes = pred_boxes[idx_keep]
+                scores = scores[idx_keep]
+
+                idx_elong = filter_non_elong(pred_boxes)
+                scores = scores[idx_elong]
+                pred_boxes = pred_boxes[idx_elong]
+
+                evaluator.get_exp_metrics(pred_boxes, scores, torch.tensor(labels.boxes, device = 'cuda'), labels.confidences)
+            
+            recalls, precisions, accuracies, scores, av_precision, recalls_levels, fp_nums = recall_precision_curve_with_intensities(evaluator.metrics)
+            df1, df2 = get_full_conf_results(evaluator.metrics)
+            print(df1)
+            print(df2)
+            return df2['ap_total'].values[0]
 
         try:
             dset_name = '/data/constantin/datasets/41.h5'
             model.eval()
-            with torch.no_grad():
-                eval_ap = eval_ap_func(dset_name, epoch, output_dir)
-            with open(output_dir / 'exp_ap_40_polar.txt', 'a+') as f:
+            eval_ap = eval_ap_func(dset_name, epoch, output_dir)
+            with open(output_dir  / 'exp_ap_40_polar.txt', 'a+') as f:
                 f.write(str(eval_ap) + "\n")
-        except Exception:
+        except:
             pass
 
 
