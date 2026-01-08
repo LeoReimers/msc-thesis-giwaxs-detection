@@ -176,11 +176,12 @@ def build_backbone(args):
         # [PATCH] Nur vorhandene Args als **kwargs weiterreichen, damit Defaults nicht mit None überschrieben werden
         swin_kwargs = {}
         for k in ['window_size_h', 'window_size_w', 'patch_size_h', 'patch_size_w',
-                  'in_chans', 'embed_dim', 'depths', 'num_heads', 'stop_down_at']:
+                  'embed_dim', 'depths', 'num_heads', 'stop_down_at']:
             if hasattr(args, k):
                 v = getattr(args, k)
                 if v is not None:
                     swin_kwargs[k] = v
+
 
         backbone = build_swin_transformer(
                     args.backbone,
@@ -188,7 +189,8 @@ def build_backbone(args):
                     out_indices=tuple(return_interm_indices),
                     dilation=args.dilation,
                     use_checkpoint=use_checkpoint,
-                    **swin_kwargs)  # [PATCH]
+                    **swin_kwargs)  # [PATCH]                
+        print("[DEBUG] patch_embed.in_chans =", backbone.patch_embed.in_chans)
 
         # freeze some layers
         if backbone_freeze_keywords is not None:

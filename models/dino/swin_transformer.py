@@ -756,7 +756,7 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
             num_heads=[ 6, 12, 24, 48 ],
             window_size_h=4,
             window_size_w=4,
-            in_chans=1
+            #in_chans=1
         ),
 
     }

@@ -44,7 +44,7 @@ HISTOGRAM_METRIX_NAME  = "Metrix.txt"
 
 # Loss axis (left)
 Y_MIN_LOSS = 0.2
-Y_MAX_LOSS = None
+Y_MAX_LOSS = 0.45
 
 # AP axis (right)
 Y_MIN_AP = None

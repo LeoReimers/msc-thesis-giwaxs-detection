@@ -5,7 +5,7 @@
 Collect & Plot (Cluster-Version)
 
 Für jeden Run unter /mnt/lustre/work/schreiber/szb559/DINO/output/<RUN>/:
-  - sammelt AP_total (exp_log_single.txt; zweite "exp metrics"-Messung falls vorhanden)
+  - sammelt AP_total (aus exp_log_single.txt oder exp_ap_40_polar.txt)
   - sammelt loss_giou (training_stats.txt)
   - schreibt /output/<RUN>/<RUN>_metrics.txt  mit:  epoch ap_total loss_giou
 
@@ -50,29 +50,86 @@ FLOAT_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
 EPOCH_GENERIC_RE = re.compile(r"epoch\s+(\d+)")
 EPOCH_TRAINSTATS_RE = re.compile(r"^epoch:\s*(\d+)\s*(\{.*\})\s*$")
 
+
 # ----------------------------- Parsers ---------------------------------------
-def parse_ap_total(exp_log_path: str, take_second: bool = True):
-    """AP_total aus exp_log_single.txt (letzter Float in 'exp metrics'-Zeile).
-       Pro Epoche: 2. Messung falls vorhanden (take_second=True), sonst letzte."""
-    if not os.path.isfile(exp_log_path):
+def _parse_ap_from_exp_log(path: str, take_second: bool = True):
+    """
+    Liest AP_total aus exp_log_single.txt.
+    Erwartet Zeilen mit 'exp metrics' und 'epoch N', nimmt den letzten Float in der Zeile.
+    """
+    if not os.path.isfile(path):
         return {}
+
     ep_to_vals = defaultdict(list)
     current_epoch = None
-    with open(exp_log_path, "r", encoding="utf-8", errors="ignore") as f:
+
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
+            # Epoche setzen, falls 'epoch N' in der Zeile vorkommt
             m_ep = EPOCH_GENERIC_RE.search(line)
             if m_ep:
                 current_epoch = int(m_ep.group(1))
+
+            # Nur Zeilen mit exp metrics auswerten
             if "exp metrics" in line and current_epoch is not None:
                 floats = FLOAT_RE.findall(line)
                 if floats:
-                    ap_total = float(floats[-1])
-                    ep_to_vals[current_epoch].append(ap_total)
+                    ap_val = float(floats[-1])
+                    ep_to_vals[current_epoch].append(ap_val)
+
     out = {}
     for e in sorted(ep_to_vals):
         vals = ep_to_vals[e]
+        if not vals:
+            continue
+        # 2. Messung nehmen (wie früher), ansonsten die letzte
         out[e] = vals[1] if (take_second and len(vals) >= 2) else vals[-1]
     return out
+
+
+def _parse_ap_from_polar_txt(path: str):
+    """
+    Liest AP_total aus exp_ap_40_polar.txt.
+    Format: pro Zeile genau ein Float (AP_total), ohne Epoch-Angabe.
+    Epoch wird hier als Zeilenindex 0,1,2,... angenommen.
+    """
+    if not os.path.isfile(path):
+        return {}
+
+    ap_map = {}
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for idx, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                val = float(line)
+            except ValueError:
+                continue
+            # Epoch = Zeilenindex (0-basierend)
+            ap_map[idx] = val
+    return ap_map
+
+
+def parse_ap_total(run_dir: str, take_second: bool = True):
+    """
+    Sucht im Run-Ordner zuerst exp_log_single.txt (altes Format),
+    falls dort nichts gefunden wird, exp_ap_40_polar.txt (neues Format).
+
+    Rückgabe: dict {epoch -> ap_total}
+    """
+    # 1) altes Format: exp_log_single.txt
+    exp_log_path = os.path.join(run_dir, "exp_log_single.txt")
+    ap_map = _parse_ap_from_exp_log(exp_log_path, take_second=take_second)
+
+    # 2) wenn leer oder Datei nicht vorhanden, neues Format verwenden
+    if not ap_map:
+        polar_path = os.path.join(run_dir, "exp_ap_40_polar.txt")
+        ap_map = _parse_ap_from_polar_txt(polar_path)
+
+    return ap_map
+
+
 
 def parse_loss_giou(training_stats_path: str):
     """loss_giou aus training_stats.txt (Dict-String nach 'epoch: N')."""
@@ -94,6 +151,7 @@ def parse_loss_giou(training_stats_path: str):
                 continue
     return out
 
+
 # ----------------------------- Plot helpers ----------------------------------
 def floor_for_log(values, ymin):
     """Werte <=0 minimal anheben, damit log-Scale robust bleibt (nur Darstellung)."""
@@ -103,34 +161,49 @@ def floor_for_log(values, ymin):
         if v is None or (isinstance(v, float) and math.isnan(v)):
             out.append(v)
         elif v <= 0:
-            out.append(floor_val); bumped = True
+            out.append(floor_val)
+            bumped = True
         else:
             if v < ymin:
                 bumped = True
             out.append(max(v, floor_val))
     return out, bumped
 
+
 # ----------------------------- Main ------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", nargs="+", required=True, help="Run-Ordner unter output/, z.B. hold_70 hold_60 …")
-    ap.add_argument("--output-base", default=OUTPUT_BASE_DEFAULT, help="Basisverzeichnis der Runs")
-    ap.add_argument("--plots-base",  default=PLOTS_BASE_DEFAULT,  help="Zielordner für Plots")
+    ap.add_argument("--run", nargs="+", required=True,
+                    help="Run-Ordner unter output/, z.B. hold_70 hold_60 …")
+    ap.add_argument("--output-base", default=OUTPUT_BASE_DEFAULT,
+                    help="Basisverzeichnis der Runs")
+    ap.add_argument("--plots-base",  default=PLOTS_BASE_DEFAULT,
+                    help="Zielordner für Plots")
     ap.add_argument("--outfile-name", default=None,
                     help="Name der je-Run-Ausgabedatei (überschreibt Default '<RUN>_metrics.txt')")
-    ap.add_argument("--take-second-ap", dest="take_second_ap", action="store_true", default=True,
+    ap.add_argument("--take-second-ap", dest="take_second_ap",
+                    action="store_true", default=True,
                     help="2. AP-Messung pro Epoche verwenden (Default)")
-    ap.add_argument("--no-take-second-ap", dest="take_second_ap", action="store_false",
+    ap.add_argument("--no-take-second-ap", dest="take_second_ap",
+                    action="store_false",
                     help="Stattdessen letzte AP-Messung nehmen")
-    ap.add_argument("--title", default=None, help="Optionaler Plot-Titel")
-    ap.add_argument("--lr-drops", nargs="*", type=float, default=[], help="Epochen mit LR-Drop (vertikale Linien)")
-    ap.add_argument("--log", dest="use_log", action="store_true", default=True, help="rechte Achse (loss_giou) log (Default)")
-    ap.add_argument("--no-log", dest="use_log", action="store_false", help="rechte Achse linear")
+    ap.add_argument("--title", default=None,
+                    help="Optionaler Plot-Titel")
+    ap.add_argument("--lr-drops", nargs="*", type=float, default=[],
+                    help="Epochen mit LR-Drop (vertikale Linien)")
+    ap.add_argument("--log", dest="use_log", action="store_true", default=True,
+                    help="rechte Achse (loss_giou) log (Default)")
+    ap.add_argument("--no-log", dest="use_log", action="store_false",
+                    help="rechte Achse linear")
     # Gewünschter Bereich: 0.2 .. 2 (egal ob log oder linear)
-    ap.add_argument("--log-y-min", type=float, default=0.2, help="untere Grenze für log-Skala (loss_giou)")
-    ap.add_argument("--log-y-max", type=float, default=2.3, help="obere Grenze für log-Skala (loss_giou)")
-    ap.add_argument("--linear-y-min", type=float, default=0.2, help="untere Grenze für lineare Skala (loss_giou)")
-    ap.add_argument("--linear-y-max", type=float, default=2.0, help="obere Grenze für lineare Skala (loss_giou)")
+    ap.add_argument("--log-y-min", type=float, default=0.2,
+                    help="untere Grenze für log-Skala (loss_giou)")
+    ap.add_argument("--log-y-max", type=float, default=2.3,
+                    help="obere Grenze für log-Skala (loss_giou)")
+    ap.add_argument("--linear-y-min", type=float, default=0.2,
+                    help="untere Grenze für lineare Skala (loss_giou)")
+    ap.add_argument("--linear-y-max", type=float, default=2.0,
+                    help="obere Grenze für lineare Skala (loss_giou)")
     args = ap.parse_args()
 
     # Zielplot-Ordner
@@ -143,7 +216,8 @@ def main():
 
     colors = plt.rcParams['axes.prop_cycle'].by_key().get(
         'color',
-        ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+        ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+         "#9467bd", "#8c564b"]
     )
 
     # Für Dateinamen
@@ -165,10 +239,9 @@ def main():
             print(f"[WARN] Run-Verzeichnis nicht gefunden: {run_dir}")
             continue
 
-        exp_log_path        = os.path.join(run_dir, "exp_log_single.txt")
         training_stats_path = os.path.join(run_dir, "training_stats.txt")
 
-        ap_total_map  = parse_ap_total(exp_log_path, take_second=args.take_second_ap)
+        ap_total_map  = parse_ap_total(run_dir, take_second=args.take_second_ap)
         loss_giou_map = parse_loss_giou(training_stats_path)
 
         epochs = sorted(set(ap_total_map) | set(loss_giou_map))
@@ -216,8 +289,10 @@ def main():
         # Plotten
         color = colors[i % len(colors)]
         # AP (links)
-        line_ap, = ax_left.plot(epochs, ap_vals, linewidth=1.9, color=color, label=f"{run} AP")
-        ap_lines.append(line_ap); ap_labels.append(f"{run} AP")
+        line_ap, = ax_left.plot(epochs, ap_vals, linewidth=1.9,
+                                color=color, label=f"{run} AP")
+        ap_lines.append(line_ap)
+        ap_labels.append(f"{run} AP")
 
         # loss_giou (rechts)
         if args.use_log:
@@ -226,15 +301,19 @@ def main():
         else:
             lg_plot = lg_vals
 
-        line_lg, = ax_right.plot(epochs, lg_plot, linestyle="--", linewidth=1.6,
-                                 color=color, alpha=0.9, label=f"{run} loss_giou")
-        lg_lines.append(line_lg); lg_labels.append(f"{run} loss_giou")
+        line_lg, = ax_right.plot(
+            epochs, lg_plot, linestyle="--", linewidth=1.6,
+            color=color, alpha=0.9, label=f"{run} loss_giou"
+        )
+        lg_lines.append(line_lg)
+        lg_labels.append(f"{run} loss_giou")
 
     # LR-Drops
     lr_line = None
     if args.lr_drops:
         for j, drop in enumerate(args.lr_drops):
-            lr_line = ax_left.axvline(drop, color="red", linestyle=":", linewidth=1.2)
+            lr_line = ax_left.axvline(drop, color="red",
+                                      linestyle=":", linewidth=1.2)
 
     # Rechte Achse skalieren (fix 0.2..2 wie gewünscht)
     if args.use_log:
@@ -256,7 +335,8 @@ def main():
     # Legende: erst alle AP, dann alle loss_giou, dann lr_drop
     legend_lines = ap_lines + lg_lines + ([lr_line] if lr_line is not None else [])
     legend_labels = ap_labels + lg_labels + (["lr_drop"] if lr_line is not None else [])
-    ax_left.legend(legend_lines, legend_labels, fontsize=9, loc="center right", ncol=2)
+    ax_left.legend(legend_lines, legend_labels, fontsize=9,
+                   loc="center right", ncol=2)
 
     # ---------------- Gruppenstatistik & Ausgabe ----------------
     if mean_loss_rows:
@@ -372,9 +452,6 @@ def main():
 
                     print(f"[OK] Gruppenstatistik für Histogramm nach {hist_file} geschrieben "
                           f"(Gruppe: {group_name})")
-                else:
-                    # Musterbedingung nicht erfüllt -> kein Histogram-Logging
-                    pass
 
     plt.tight_layout()
 
@@ -387,6 +464,7 @@ def main():
 
     if args.use_log and any_bumped:
         print("[Hinweis] Mindestens ein loss_giou-Wert <= 0 – für Log-Skala minimal angehoben (nur Darstellung).")
+
 
 if __name__ == "__main__":
     main()

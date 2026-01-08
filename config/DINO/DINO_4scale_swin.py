@@ -2,8 +2,8 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-lr = 2e-05                     # Start-LR = 5.0e-05
-lr_backbone = 2e-06            # optional: ~0.1 * lr (vorher: 1e-06)
+lr = 3.0e-05                     # Start-LR = 5.0e-05
+lr_backbone = 3.0e-06            # optional: ~0.1 * lr (vorher: 1e-06)
 param_dict_type = 'default'
 lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
@@ -18,8 +18,8 @@ clip_max_norm = 0.1
 onecyclelr = False
 multi_step_lr = True
 
-lr_drop_list = [ 80, 105]
-lr_gammas    = [0.1, 0.05]  
+lr_drop_list = [ 95, 105]
+lr_gammas    = [0.9, 0.6]  
 
 
 

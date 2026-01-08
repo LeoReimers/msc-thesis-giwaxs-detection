@@ -226,11 +226,9 @@ def main(args):
             json.dump(vars(args), f, indent=2)
     cfg_dict = cfg._cfg_dict.to_dict()
     args_vars = vars(args)
-    for k,v in cfg_dict.items():
+    for k, v in cfg_dict.items():
         if k not in args_vars:
             setattr(args, k, v)
-        else:
-            raise ValueError("Key {} can used by args only".format(k))
 
     # update some new args temporally
     if not getattr(args, 'use_ema', None):
@@ -407,7 +405,7 @@ def main(args):
         dataset = SimulationDataset()
         data_loader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=2,
+            batch_size=4,
             shuffle=True,
             num_workers=0,
             collate_fn=collate_fn
@@ -541,13 +539,21 @@ def main(args):
             return df2['ap_total'].values[0]
 
         try:
-            dset_name = '/data/constantin/datasets/41.h5'
-            model.eval()
-            eval_ap = eval_ap_func(dset_name, epoch, output_dir)
-            with open(output_dir  / 'exp_ap_40_polar.txt', 'a+') as f:
-                f.write(str(eval_ap) + "\n")
-        except:
-            pass
+            dset_path = Path("/mnt/lustre/work/schreiber/szb559/DINO/datasets/41.h5")
+            if dset_path.is_file():
+                model.eval()
+                eval_ap = eval_ap_func(str(dset_path), epoch, output_dir)
+                with open(output_dir / 'exp_ap_40_polar.txt', 'a+') as f:
+                    f.write(f"{eval_ap}\n")
+            else:
+                # Falls der Pfad doch mal nicht stimmt, explizite Meldung:
+                with open(output_dir / 'eval_error.txt', 'a+') as f:
+                    f.write(f"epoch {epoch}: dataset not found at {dset_path}\n")
+        except Exception as e:
+            import traceback
+            with open(output_dir / 'eval_error.txt', 'a+') as f:
+                f.write(f"epoch {epoch}: {repr(e)}\n{traceback.format_exc()}\n")
+
 
 
     total_time = time.time() - start_time

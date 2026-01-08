@@ -15,7 +15,8 @@ from torch import Tensor
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchvision.utils import draw_bounding_boxes
-from torchvision.ops import nms, masks_to_boxes
+from torchvision.ops import nms
+from util.box_ops import masks_to_boxes
 import torchvision
 from math import pi, sin, cos
 from dataclasses import dataclass
@@ -204,6 +205,8 @@ class FastSimulation(object):
         #coords for black detector masks
         self.rs = 0
         self.ws = 0
+        self.detector_mask = False
+
 
     @torch.no_grad()
     def simulate_img(self, background_img = None):
@@ -226,7 +229,7 @@ class FastSimulation(object):
             self.__init__()
 
         self.detector_mask = False
-        self.create_detector_mask()
+        #self.create_detector_mask()
 
         boxes, intensities, is_ring = self.simulate_labels()
 
@@ -716,28 +719,18 @@ class FastSimulation(object):
         return img
     
     def create_detector_mask(self):
-        self.detector_mask = True
-        n = 2
-        self.rs = np.random.uniform(80, 380, n)
-        self.ws = np.random.uniform(1, 7, n)
-
-        if n == 2 and abs(self.rs[1] - self.rs[0]) < 100:
-            self.rs, self.ws = self.rs[:1], self.ws[:1]
-
-        self.idx_black = torch.zeros(size=(HEIGHT, WIDTH),dtype=torch.bool, device=self.device)
-
-        for r, w in zip(self.rs, self.ws):
-            self.idx_black[(self.mask_coords <= (r + w)) & (self.mask_coords >= (r - w))] = 1
+        # Detector-Gaps vorübergehend deaktiviert
+        self.detector_mask = False
+        # idx_black kannst du initialisieren, falls es irgendwo gelesen wird
+        self.idx_black = torch.zeros(size=(HEIGHT, WIDTH), dtype=torch.bool, device=self.device)
 
     def filter_peaks_detector_gap(self, boxes_peaks_on_rings):
         if self.detector_mask:
-            boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)        
-            mask = self.idx_black & boxes_as_masks
-            # erst über dim 1, dann über dim 1 des reduzierten Tensors:
-            peaks_in_gap = mask.any(dim=1).any(dim=1)   # shape: [N]
-            return ~peaks_in_gap
+            boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)  # bool (N,H,W)
+            # idx_black ist bereits bool (HEIGHT, WIDTH)
+            return torch.logical_not(torch.any(self.idx_black & boxes_as_masks, dim=(1, 2)))
+        return torch.ones(size=(len(boxes_peaks_on_rings),), dtype=torch.bool, device=self.device)
 
-        return torch.ones(size=(len(boxes_peaks_on_rings),), dtype=torch.bool ,device=self.device)
 
 
     def apply_detector_gaps(self, img, mask):
@@ -750,29 +743,40 @@ class FastSimulation(object):
     def boxes_to_masks(self, boxes):
         """
         Convert bounding boxes to masks without using a for loop.
-        
+
         Args:
-            boxes (Tensor): Bounding boxes, shape (N, 4) where N is the number of boxes.
-                            Each box is represented as (x1, y1, x2, y2).
-            image_size (tuple): Size of the image (height, width).
-        
+            boxes (Tensor): (N, 4) with (x1, y1, x2, y2)
         Returns:
-            Tensor: Masks, shape (N, height, width).
+            Tensor: (N, HEIGHT, WIDTH) bool mask for each box
         """
         N = boxes.shape[0]
-        masks = torch.zeros((N, HEIGHT, WIDTH), dtype=torch.uint8, device=self.device)
-        
-        x1, y1, x2, y2 = boxes.unbind(1)
-        
-        # Create a grid of coordinates
-        y = torch.arange(HEIGHT, dtype=torch.int64, device=self.device).view(1, HEIGHT, 1)
-        x = torch.arange(WIDTH, dtype=torch.int64, device=self.device).view(1, 1, WIDTH)
-        
-        # Create masks using broadcasting
-        masks = ((y >= y1.view(N, 1, 1)) & (y < y2.view(N, 1, 1)) &
-                (x >= x1.view(N, 1, 1)) & (x < x2.view(N, 1, 1))).to(torch.uint8)
-        
-        return masks
+
+        # Edge case: keine Box
+        if N == 0:
+            return torch.zeros((0, HEIGHT, WIDTH), dtype=torch.bool, device=self.device)
+
+        # x1, y1, x2, y2 extrahieren – dadurch ist y1 sicher definiert
+        x1, y1, x2, y2 = boxes.unbind(1)  # shape: (N,)
+
+        # Koordinatenraster
+        y = torch.arange(HEIGHT, dtype=torch.int64, device=self.device).view(1, HEIGHT, 1)  # (1, H, 1)
+        x = torch.arange(WIDTH,  dtype=torch.int64, device=self.device).view(1, 1, WIDTH)   # (1, 1, W)
+
+        # Für Broadcasting auf (N, H, W) vorbereiten
+        x1 = x1.view(N, 1, 1)
+        x2 = x2.view(N, 1, 1)
+        y1 = y1.view(N, 1, 1)
+        y2 = y2.view(N, 1, 1)
+
+        # Maske: Pixel innerhalb der Box
+        masks = (
+            (y >= y1) & (y < y2) &
+            (x >= x1) & (x < x2)
+        )
+
+        return masks  # dtype: bool
+
+
     
 @with_probability(0.5)
 def apply_kernel(img, kernel):
