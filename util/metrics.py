@@ -1,51 +1,17 @@
 # -*- coding: utf-8 -*-
-#
-#
-# This source code is licensed under the GPL license found in the
-# LICENSE file in the root directory of this source tree.
-
 from collections import namedtuple
 from typing import List, Union, Iterable
-
 import numpy as np
-
 
 MatchedPair = namedtuple('MatchedPair', 't_box p_box iou score intensity')
 FalsePositive = namedtuple('FalsePositive', 'p_box score')
 FalseNegative = namedtuple('FalseNegative', 't_box intensity')
 
-
 class FullMetrics(object):
-    # MatchedPair: t_box p_box iou score intensity
-
-    MATCHED_PAIR_KEYS = (
-        'matched_t_boxes',
-        'matched_p_boxes',
-        'matched_ious',
-        'matched_scores',
-        'matched_intensities',
-    )
-
-    # FalsePositive: p_box score
-
-    FP_KEYS = (
-        'fp_boxes',
-        'fp_scores',
-    )
-
-    # FalseNegative: t_box intensity
-
-    FN_KEYS = (
-        'fn_boxes',
-        'missed_intensities',
-    )
-
-    NUM_KEYS = (
-        'num_matched_per_image',
-        'num_fp_per_image',
-        'num_fn_per_image',
-    )
-
+    MATCHED_PAIR_KEYS = ('matched_t_boxes', 'matched_p_boxes', 'matched_ious', 'matched_scores', 'matched_intensities')
+    FP_KEYS = ('fp_boxes', 'fp_scores')
+    FN_KEYS = ('fn_boxes', 'missed_intensities')
+    NUM_KEYS = ('num_matched_per_image', 'num_fp_per_image', 'num_fn_per_image')
     KEYS = (*MATCHED_PAIR_KEYS, *FP_KEYS, *FN_KEYS, *NUM_KEYS)
 
     def __init__(self,
@@ -56,31 +22,12 @@ class FullMetrics(object):
                  num_fp: List[int] = (),
                  num_fn: List[int] = (),
                  ):
-
         self._matched_pairs = list(matched_pairs)
         self._fp = list(false_positives)
         self._fn = list(false_negatives)
         self._num_matched = list(num_matched)
         self._num_fp = list(num_fp)
         self._num_fn = list(num_fn)
-
-        if not (
-                len(self._num_matched) == len(self._num_fp) and
-                len(self._num_matched) == len(self._num_fn)
-        ):
-            raise ValueError(
-                'Inconsistent number of images: ',
-                len(self._num_matched),
-                len(self._num_fp),
-                len(self._num_fn),
-            )
-
-        if sum(self._num_matched) != len(self._matched_pairs):
-            raise ValueError('Inconsistent matched num')
-        if sum(self._num_fp) != len(self._fp):
-            raise ValueError('Inconsistent fp num')
-        if sum(self._num_fn) != len(self._fn):
-            raise ValueError('Inconsistent fn num')
 
     @property
     def num_images(self) -> int:
@@ -91,7 +38,6 @@ class FullMetrics(object):
         matched_pairs = [MatchedPair(*d) for d in zip(*[data_dict[key] for key in cls.MATCHED_PAIR_KEYS])]
         false_positives = [FalsePositive(*d) for d in zip(*[data_dict[key] for key in cls.FP_KEYS])]
         false_negatives = [FalseNegative(*d) for d in zip(*[data_dict[key] for key in cls.FN_KEYS])]
-
         return cls(
             matched_pairs=matched_pairs,
             false_positives=false_positives,
@@ -100,14 +46,6 @@ class FullMetrics(object):
             num_fp=list(data_dict['num_fp_per_image']),
             num_fn=list(data_dict['num_fn_per_image']),
         )
-
-    def get_q_error(self, min_score: float = 0) -> np.ndarray:
-        indices = self.matched_scores > min_score if min_score else ...
-        q_err = (
-                        self.matched_p_boxes[indices, 0] + self.matched_p_boxes[indices, 2] -
-                        self.matched_t_boxes[indices, 0] - self.matched_t_boxes[indices, 2]
-                ) / 2
-        return q_err
 
     @property
     def matched_ious(self) -> np.ndarray:
@@ -211,7 +149,6 @@ class FullMetrics(object):
     def __add__(self, other):
         if not isinstance(other, FullMetrics):
             return NotImplemented
-
         return FullMetrics(
             self._matched_pairs + other._matched_pairs,
             self._fp + other._fp,
@@ -224,19 +161,8 @@ class FullMetrics(object):
     def __iadd__(self, other):
         if not isinstance(other, FullMetrics):
             return NotImplemented
-
         self.append(other)
         return self
-
-    def __eq__(self, other):
-        if not isinstance(other, FullMetrics):
-            return False
-
-        for key in self.KEYS:
-            if not np.allclose(getattr(self, key), getattr(other, key)):
-                return False
-        return True
-
 
 def _get_indices(img_idx: int, num_list: List[int]) -> np.ndarray:
     indices = np.zeros(sum(num_list)).astype(bool)

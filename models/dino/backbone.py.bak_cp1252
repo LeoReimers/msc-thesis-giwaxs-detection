@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # ------------------------------------------------------------------------
 # DINO
 # Copyright (c) 2022 IDEA. All Rights Reserved.
@@ -174,7 +173,7 @@ def build_backbone(args):
     elif args.backbone in ['swin_T_224_1k', 'swin_B_224_22k', 'swin_B_384_22k', 'swin_L_224_22k', 'swin_L_384_22k']:
         pretrain_img_size = int(args.backbone.split('_')[-2])
 
-        # [PATCH] Nur vorhandene Args als **kwargs weiterreichen, damit Defaults nicht mit None Ã¼berschrieben werden
+        # [PATCH] Nur vorhandene Args als **kwargs weiterreichen, damit Defaults nicht mit None überschrieben werden
         swin_kwargs = {}
         for k in ['window_size_h', 'window_size_w', 'patch_size_h', 'patch_size_w',
                   'embed_dim', 'depths', 'num_heads', 'stop_down_at']:
@@ -235,6 +234,6 @@ def build_backbone(args):
 
     model = Joiner(backbone, position_embedding)
     model.num_channels = bb_num_channels
-    # [PATCH] typing.List taugt nicht fÃ¼r isinstance-Checks
+    # [PATCH] typing.List taugt nicht für isinstance-Checks
     assert isinstance(bb_num_channels, (list, tuple)), "bb_num_channels is expected to be list/tuple but {}".format(type(bb_num_channels))
     return model

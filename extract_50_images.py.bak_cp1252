@@ -18,11 +18,11 @@ os.makedirs(output_dir, exist_ok=True)
 with open(ann_file, 'r') as f:
     data = json.load(f)
 
-# WÃ¤hle die ersten N Bilder aus
+# Wähle die ersten N Bilder aus
 selected_images = data['images'][:NUM_IMAGES]
 selected_ids = {img['id'] for img in selected_images}
 
-# Filtere Annotationen fÃ¼r die ausgewÃ¤hlten Bilder
+# Filtere Annotationen für die ausgewählten Bilder
 filtered_annotations = [ann for ann in data['annotations'] if ann['image_id'] in selected_ids]
 
 # Baue neue JSON-Struktur
@@ -39,7 +39,7 @@ subset_ann_file = 'data/coco/annotations/instances_train2017_subset.json'
 with open(subset_ann_file, 'w') as f:
     json.dump(new_data, f)
 
-# Kopiere die zugehÃ¶rigen Bilder
+# Kopiere die zugehörigen Bilder
 print(f'?? Kopiere {len(selected_images)} Bilder nach {output_dir}')
 copied = 0
 for img in selected_images:

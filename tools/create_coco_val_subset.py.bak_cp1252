@@ -12,11 +12,11 @@ NUM_IMAGES = 50
 with open(ANNOTATIONS_PATH, "r") as f:
     data = json.load(f)
 
-# WÃ¤hle zufÃ¤llig 50 Bild-IDs
+# Wähle zufällig 50 Bild-IDs
 image_ids = [img["id"] for img in data["images"]]
 selected_ids = set(random.sample(image_ids, NUM_IMAGES))
 
-# Filtere zugehÃ¶rige Bilder und Annotationen
+# Filtere zugehörige Bilder und Annotationen
 subset_images = [img for img in data["images"] if img["id"] in selected_ids]
 subset_annotations = [ann for ann in data["annotations"] if ann["image_id"] in selected_ids]
 

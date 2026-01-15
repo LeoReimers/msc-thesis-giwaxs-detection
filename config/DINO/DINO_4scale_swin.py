@@ -2,8 +2,8 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-lr = 3.0e-05                     # Start-LR = 5.0e-05
-lr_backbone = 3.0e-06            # optional: ~0.1 * lr (vorher: 1e-06)
+lr = 3.1e-05                     # Start-LR = 5.0e-05
+lr_backbone = 3.1e-06            # optional: ~0.1 * lr (vorher: 1e-06)
 param_dict_type = 'default'
 lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
@@ -19,7 +19,7 @@ onecyclelr = False
 multi_step_lr = True
 
 lr_drop_list = [ 95, 105]
-lr_gammas    = [0.9, 0.6]  
+lr_gammas    = [0.5, 0.5]  
 
 
 
@@ -42,7 +42,7 @@ dim_feedforward = 2048
 hidden_dim = 256
 dropout = 0.0
 nheads = 8
-num_queries = 900
+num_queries = 480
 query_dim = 4
 num_patterns = 0
 pdetr3_bbox_embed_diff_each_layer = False
@@ -113,4 +113,14 @@ ema_decay = 0.9997
 ema_epoch = 0
 
 use_detached_boxes_dec_out = False
+
+# --- CLAHE preprocessing ---
+use_clahe = True          # Toggle ON/OFF
+clahe_clip_limit = 2.0     # Startwert (typisch 1.5-4.0)
+clahe_tile_grid = [8, 8]   # Startwert (typisch [8,8] oder [16,16])
+
+clahe_apply_train = True   # auf synthetische Trainingsbilder anwenden
+clahe_apply_eval  = True   # auf reale Eval-Bilder anwenden
+
+
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # ------------------------------------------------------------------------
 # DINO
 # Copyright (c) 2022 IDEA. All Rights Reserved.
@@ -344,7 +343,7 @@ class DeformableTransformer(nn.Module):
             N = scores.shape[1]
             if topk > N:
                 print(f"[WARN] topk({topk}) > N_tokens({N}) -> clamping topk to {N}")
-                # Optional: hier auch spatial_shapes loggen, falls verfÃ¼gbar:
+                # Optional: hier auch spatial_shapes loggen, falls verfügbar:
                 # print("[DEBUG] spatial_shapes=", spatial_shapes, "level_start_index=", level_start_index)
                 topk = N
             

@@ -733,7 +733,7 @@ class FastSimulation(object):
         if self.detector_mask:
             boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)        
             mask = self.idx_black & boxes_as_masks
-            # erst über dim 1, dann über dim 1 des reduzierten Tensors:
+            # erst Ã¼ber dim 1, dann Ã¼ber dim 1 des reduzierten Tensors:
             peaks_in_gap = mask.any(dim=1).any(dim=1)   # shape: [N]
             return ~peaks_in_gap
 
