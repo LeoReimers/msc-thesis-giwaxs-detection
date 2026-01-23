@@ -22,10 +22,10 @@ WINDOW_H="${2:-4}"
 WINDOW_W="${3:-4}"
 
 # -------- SLURM defaults (overridable via env) --------
-PARTITION="${PARTITION:-a100-preemptable-galvani}"
-CPUS="${CPUS:-12}"
-MEM="${MEM:-256G}"
-TIME_LIMIT="${TIME_LIMIT:-70:00:00}"
+PARTITION="${PARTITION:-a100-galvani,a100-fat-galvani,a100-preemptable-galvani}"
+CPUS="${CPUS:-8}"
+MEM="${MEM:-96G}"
+TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 GPUS="${GPUS:-1}"
 JOB_NAME="${JOB_NAME:-dino_swin}"
 
