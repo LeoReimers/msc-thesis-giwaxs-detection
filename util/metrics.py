@@ -47,6 +47,7 @@ class FullMetrics(object):
             num_fn=list(data_dict['num_fn_per_image']),
         )
 
+    # Properties für einfachen Zugriff
     @property
     def matched_ious(self) -> np.ndarray:
         return np.array([pair.iou for pair in self._matched_pairs])
@@ -54,31 +55,7 @@ class FullMetrics(object):
     @property
     def num_matched_per_image(self) -> np.ndarray:
         return np.array(self._num_matched)
-
-    @property
-    def num_fp_per_image(self) -> np.ndarray:
-        return np.array(self._num_fp)
-
-    @property
-    def num_fn_per_image(self) -> np.ndarray:
-        return np.array(self._num_fn)
-
-    @property
-    def matched_t_boxes(self) -> np.ndarray:
-        return np.array([pair.t_box for pair in self._matched_pairs]).reshape(-1, 4)
-
-    @property
-    def matched_p_boxes(self) -> np.ndarray:
-        return np.array([pair.p_box for pair in self._matched_pairs]).reshape(-1, 4)
-
-    @property
-    def fn_boxes(self) -> np.ndarray:
-        return np.array([pair.t_box for pair in self._fn]).reshape(-1, 4)
-
-    @property
-    def fp_boxes(self) -> np.ndarray:
-        return np.array([pair.p_box for pair in self._fp]).reshape(-1, 4)
-
+    
     @property
     def matched_scores(self) -> np.ndarray:
         return np.array([pair.score for pair in self._matched_pairs])
@@ -86,7 +63,7 @@ class FullMetrics(object):
     @property
     def fp_scores(self) -> np.ndarray:
         return np.array([fp.score for fp in self._fp])
-
+        
     @property
     def matched_intensities(self) -> np.ndarray:
         return np.array([pair.intensity for pair in self._matched_pairs])
@@ -94,49 +71,10 @@ class FullMetrics(object):
     @property
     def missed_intensities(self) -> np.ndarray:
         return np.array([fn.intensity for fn in self._fn])
-
-    @property
-    def matched_pairs(self):
-        return list(self._matched_pairs)
-
-    @property
-    def false_positives(self):
-        return list(self._fp)
-
+    
     @property
     def false_negatives(self):
         return list(self._fn)
-
-    def matched_indices(self, img_idx: int):
-        return _get_indices(img_idx, self._num_matched)
-
-    def fp_indices(self, img_idx: int):
-        return _get_indices(img_idx, self._num_fp)
-
-    def fn_indices(self, img_idx: int):
-        return _get_indices(img_idx, self._num_fn)
-
-    def get_img_metrics(self, idx: Union[int, Iterable[int], slice]) -> 'FullMetrics':
-        if isinstance(idx, slice):
-            idx = tuple(range(self.num_images))[idx]
-        elif isinstance(idx, int):
-            idx = (idx,)
-
-        matched_indices = np.concatenate([np.where(self.matched_indices(i))[0] for i in idx])
-        fn_indices = np.concatenate([np.where(self.fn_indices(i))[0] for i in idx])
-        fp_indices = np.concatenate([np.where(self.fp_indices(i))[0] for i in idx])
-
-        matched_pairs = [self._matched_pairs[i] for i in matched_indices]
-        fp = [self._fp[i] for i in fp_indices]
-        fn = [self._fn[i] for i in fn_indices]
-        num_matched = [self._num_matched[i] for i in idx]
-        num_fp = [self._num_fp[i] for i in idx]
-        num_fn = [self._num_fn[i] for i in idx]
-
-        return FullMetrics(matched_pairs, fp, fn, num_matched, num_fp, num_fn)
-
-    def __getitem__(self, idx: Union[int, Iterable[int], slice]):
-        return self.get_img_metrics(idx)
 
     def append(self, other: 'FullMetrics'):
         self._matched_pairs += other._matched_pairs
@@ -146,6 +84,7 @@ class FullMetrics(object):
         self._num_fp += other._num_fp
         self._num_fn += other._num_fn
 
+    # WICHTIG: Hier nutzen wir positionale Argumente, um Namenskonflikte zu vermeiden
     def __add__(self, other):
         if not isinstance(other, FullMetrics):
             return NotImplemented
@@ -163,10 +102,3 @@ class FullMetrics(object):
             return NotImplemented
         self.append(other)
         return self
-
-def _get_indices(img_idx: int, num_list: List[int]) -> np.ndarray:
-    indices = np.zeros(sum(num_list)).astype(bool)
-    nums_before = sum(num_list[:img_idx]) if img_idx else 0
-    num_peaks = num_list[img_idx]
-    indices[nums_before:nums_before + num_peaks] = True
-    return indices
