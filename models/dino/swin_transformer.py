@@ -306,7 +306,7 @@ class PatchMerging(nn.Module):
         if self.downsample is not None:
             x_down = self.downsample(x, H, W)
             
-            # --- FIX: Korrekte Berechnung der neuen Größe für das nächste Layer ---
+            # --- FIX: Korrekte Berechnung der neuen GrÃ¶ÃŸe fÃ¼r das nÃ¤chste Layer ---
             if hasattr(self.downsample, 'rh') and hasattr(self.downsample, 'rw'):
                 # Wenn wir AdaptivePatchMerging nutzen, die dortigen Faktoren nehmen
                 # (H + rh - 1) // rh entspricht ceil(H / rh)
@@ -473,8 +473,8 @@ class BasicLayer(nn.Module):
         if self.downsample is not None:
             x_down = self.downsample(x, H, W)
             
-            # --- FIX: Dynamische Berechnung der neuen Größe ---
-            # Prüft, ob unser AdaptivePatchMerging genutzt wird (hat Attribute rh/rw)
+            # --- FIX: Dynamische Berechnung der neuen GrÃ¶ÃŸe ---
+            # PrÃ¼ft, ob unser AdaptivePatchMerging genutzt wird (hat Attribute rh/rw)
             if hasattr(self.downsample, 'rh') and hasattr(self.downsample, 'rw'):
                 Wh = (H + self.downsample.rh - 1) // self.downsample.rh
                 Ww = (W + self.downsample.rw - 1) // self.downsample.rw
@@ -622,18 +622,18 @@ class SwinTransformer(nn.Module):
         # --- START NEUER CODE ---
         # 1. Downsampling-Strategie definieren
         if downsample_factors is None:
-            # Falls nichts übergeben wurde, Standard (2, 2) nutzen
+            # Falls nichts Ã¼bergeben wurde, Standard (2, 2) nutzen
             downsample_factors = [(2, 2) for _ in range(self.num_layers - 1)]
 
-        # 2. Features berechnen: Wir verdoppeln Kanäle IMMER (auch bei 2x1 Merge),
-        # damit DINO konsistente Channel-Größen (C, 2C, 4C, 8C) bekommt.
+        # 2. Features berechnen: Wir verdoppeln KanÃ¤le IMMER (auch bei 2x1 Merge),
+        # damit DINO konsistente Channel-GrÃ¶ÃŸen (C, 2C, 4C, 8C) bekommt.
         self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
 
         # 3. Layer aufbauen
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             
-            # Bestimme Downsampling für das Ende dieser Stage
+            # Bestimme Downsampling fÃ¼r das Ende dieser Stage
             downsample_factory = None
             if i_layer < self.num_layers - 1:
                 factors = downsample_factors[i_layer]
@@ -663,7 +663,7 @@ class SwinTransformer(nn.Module):
         print(f"[Swin] Initialized with downsample factors: {downsample_factors}")
         # --- ENDE NEUER CODE ---
         
-        # Hier habe ich den "alten" Code gelöscht, der den Fehler verursacht hat.
+        # Hier habe ich den "alten" Code gelÃ¶scht, der den Fehler verursacht hat.
         
         # add a norm layer for each output
         for i_layer in out_indices:
@@ -836,9 +836,9 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
             embed_dim=192,
             depths=[ 2, 2, 18, 2 ],
             num_heads=[ 6, 12, 24, 48 ],
-            window_size_h=4,
-            window_size_w=4,
-            #in_chans=1
+            window_size_h=8,
+            window_size_w=32,
+            in_chans=1
         ),
 
     }
@@ -850,7 +850,7 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
     # Check ob es schon in kw_cgf ist (da kw schon reingemerged wurde)
     if 'swin' in modelname and 'downsample_factors' not in kw_cgf:
         print("[INFO] Setting custom GIWAXS downsample factors: [(2,2), (2,1), (2,1)]")
-        # WICHTIG: Wir müssen kw_cgf updaten, da dieses Dictionary an die Klasse übergeben wird
+        # WICHTIG: Wir mÃ¼ssen kw_cgf updaten, da dieses Dictionary an die Klasse Ã¼bergeben wird
         kw_cgf['downsample_factors'] = [(2, 2), (2, 1), (2, 1)] 
         
     model = SwinTransformer(pretrain_img_size=pretrain_img_size, **kw_cgf)
