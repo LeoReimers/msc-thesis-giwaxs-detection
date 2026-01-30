@@ -732,11 +732,7 @@ class FastSimulation(object):
     def filter_peaks_detector_gap(self, boxes_peaks_on_rings):
         if self.detector_mask:
             boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)        
-            mask = self.idx_black & boxes_as_masks
-            # erst über dim 1, dann über dim 1 des reduzierten Tensors:
-            peaks_in_gap = mask.any(dim=1).any(dim=1)   # shape: [N]
-            return ~peaks_in_gap
-
+            return torch.logical_not(torch.any(self.idx_black & boxes_as_masks, dim=(1,2)))
         return torch.ones(size=(len(boxes_peaks_on_rings),), dtype=torch.bool ,device=self.device)
 
 
