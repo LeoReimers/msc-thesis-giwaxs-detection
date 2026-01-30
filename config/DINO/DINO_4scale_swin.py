@@ -9,17 +9,17 @@ lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
 lr_linear_proj_mult = 0.1
 ddetr_lr_param = False
-batch_size = 8
+batch_size = 4
 weight_decay = 0.0001
-epochs = 130                   # Training bis Ep. 130 (wie in deinem Plan)
+epochs = 350                   # Training bis Ep. 130 (wie in deinem Plan)
 lr_drop = 1000                 # ignoriert, solange lr_drop_list gesetzt ist
 save_checkpoint_interval = 1000
 clip_max_norm = 0.1
 onecyclelr = False
 multi_step_lr = True
 
-lr_drop_list = [3, 8, 10, 105, 120]
-lr_gammas    = [1.3, 1.3, 1.3, 0.1, 0.1]  
+lr_drop_list = [5, 10, 15, 300, 330] 
+lr_gammas    = [1.3, 1.4, 1.3, 0.5, 0.1]
 
 
 frozen_stages = 2
