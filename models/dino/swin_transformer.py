@@ -770,7 +770,7 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
 
 if __name__ == "__main__":
     model = build_swin_transformer('swin_L_384_22k', 1024, dilation=True)
-    x = torch.rand(1, 3, 512, 1024)
-    y = model.forward(x)
+    x = torch.rand(2, 3, 512, 1024)
+    y = model.forward_raw(x)
     x = torch.rand(2, 3, 384, 384)
     y = model.forward_raw(x)

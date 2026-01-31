@@ -42,13 +42,6 @@ def train_one_epoch(
 ) -> Dict[str, float]:
     if global_step is None:
         global_step = 0
-    """
-    Führt eine Trainings-Epoche aus.
-    - global_step wird pro Iteration inkrementiert und in resstat zurückgegeben.
-    - should_save_callback(): bool  -> wird innerhalb der Epoche regelmäßig abgefragt.
-    - save_callback(tag: str)       -> wird aufgerufen, wenn should_save_callback() True liefert.
-    """
-    # Sicherer Default für global_step
     global_step = int(global_step) if global_step is not None else 0
 
     scaler = torch.cuda.amp.GradScaler(enabled=getattr(args, "amp", False))
@@ -168,9 +161,6 @@ def train_one_epoch(
 
     if getattr(criterion, 'loss_weight_decay', False):
         resstat.update({f'weight_{k}': v for k, v in criterion.weight_dict.items()})
-    metric_logger.synchronize_between_processes()
-    resstat = {k: meter.global_avg for k, meter in metric_logger.meters.items() if meter.count > 0}
-    resstat['global_step'] = int(global_step)
     return resstat
 
 

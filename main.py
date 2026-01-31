@@ -35,14 +35,6 @@ import torchvision
 from torchvision.utils import save_image
 from torchvision.ops import nms
 
-import signal
-
-_GOT_SIGUSR1 = False
-def _on_sigusr1(signum, frame):
-    global _GOT_SIGUSR1
-    _GOT_SIGUSR1 = True
-
-
 def filter_non_elong(pred_boxes):
     y_extent = pred_boxes[:,3] - pred_boxes[:,1]
     x_extent = pred_boxes[:,2] - pred_boxes[:,0]
@@ -57,11 +49,11 @@ def box_xyxy_to_cxcywh(x):
 
 class SimulationDataset(torch.utils.data.Dataset):
 
-    def __init__(self, transforms=None, device='cuda'):
-        self.device = device
+    def __init__(self, transforms = None, device = 'cuda'):
+
+        self.device = 'cuda'
         self.transforms = transforms
-        self.simulation = FastSimulation(device=self.device)
-       
+        self.simulation = FastSimulation(device=self.device)        
 
     def __getitem__(self, idx):
         image = None
@@ -166,9 +158,6 @@ def get_args_parser():
     parser.add_argument("--local_rank", type=int, help='local rank for DistributedDataParallel')
     parser.add_argument('--amp', action='store_true',
                         help="Train with mixed precision")
-    parser.add_argument('--frozen_weights', default=None, type=str)
-    parser.add_argument('--masks', action='store_true')
-
     
     return parser
 
@@ -180,34 +169,6 @@ def build_model_main(args):
     build_func = MODULE_BUILD_FUNCS.get(args.modelname)
     model, criterion, postprocessors = build_func(args)
     return model, criterion, postprocessors
-
-def _make_weights(model_without_ddp, optimizer, scheduler_to_save, epoch, args, train_stats=None):
-    w = {
-        'model': model_without_ddp.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'lr_scheduler': (scheduler_to_save.state_dict() if scheduler_to_save is not None else None),
-        'epoch': epoch,
-        'args': args,
-    }
-    if train_stats is not None and 'global_step' in train_stats:
-        w['global_step'] = int(train_stats['global_step'])
-    # RNG-States mitsichern (wichtig für stabilen Restart)
-    import random, numpy as np, torch
-    w['py_rng_state']    = random.getstate()
-    w['np_rng_state']    = np.random.get_state()
-    w['torch_rng_state'] = torch.get_rng_state()
-    if torch.cuda.is_available():
-        w['cuda_rng_state_all'] = torch.cuda.get_rng_state_all()
-    return w
-
-def _save_ckpt(output_dir, weights, extra_tag=None):
-    from pathlib import Path
-    output_dir = Path(output_dir)
-    paths = [output_dir / 'checkpoint.pth']
-    if extra_tag is not None:
-        paths.append(output_dir / f'checkpoint_{extra_tag}.pth')
-    for p in paths:
-        utils.save_on_master(weights, p)
 
 def main(args):
     #utils.init_distributed_mode(args)
@@ -226,9 +187,11 @@ def main(args):
             json.dump(vars(args), f, indent=2)
     cfg_dict = cfg._cfg_dict.to_dict()
     args_vars = vars(args)
-    for k, v in cfg_dict.items():
+    for k,v in cfg_dict.items():
         if k not in args_vars:
             setattr(args, k, v)
+        else:
+            raise ValueError("Key {} can used by args only".format(k))
 
     # update some new args temporally
     if not getattr(args, 'use_ema', None):
@@ -250,7 +213,6 @@ def main(args):
     logger.info('rank: {}'.format(args.rank))
     logger.info('local_rank: {}'.format(args.local_rank))
     logger.info("args: " + str(args) + '\n')
-    signal.signal(signal.SIGUSR1, _on_sigusr1)
 
 
     if args.frozen_weights is not None:
@@ -286,25 +248,11 @@ def main(args):
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
     
-    if getattr(args, "multi_step_lr", False):
-        # --- START CUSTOM SCHEDULER ---
-        # Dieser Scheduler unterstützt individuelle Gamma-Werte pro Step (auch > 1.0)
-        print(f"[INFO] Using Custom LambdaLR with drops {args.lr_drop_list} and gammas {getattr(args, 'lr_gammas', 'default 0.1')}")
-        
-        def custom_lr_lambda(epoch):
-            factor = 1.0
-            # Gammas laden (Fallback auf 0.1 falls nicht in Config)
-            gammas = getattr(args, 'lr_gammas', [0.1] * len(args.lr_drop_list))
-            
-            for i, milestone in enumerate(args.lr_drop_list):
-                if epoch >= milestone:
-                    # Wenn Epoche >= Milestone, Faktor anpassen
-                    current_gamma = gammas[i] if i < len(gammas) else 0.1
-                    factor *= current_gamma
-            return factor
 
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=custom_lr_lambda)
-        # --- END CUSTOM SCHEDULER ---
+    if args.onecyclelr:
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(data_loader_train), epochs=args.epochs, pct_start=0.2)
+    elif args.multi_step_lr:
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_drop_list)
     else:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
@@ -314,68 +262,26 @@ def main(args):
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
-
-    # global_step für Logging/Resuming
-    global_step = 0
-
-    # Falls im output_dir schon ein Checkpoint liegt: standardmäßig resumin
     if os.path.exists(os.path.join(args.output_dir, 'checkpoint.pth')):
         args.resume = os.path.join(args.output_dir, 'checkpoint.pth')
-
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-
         model_without_ddp.load_state_dict(checkpoint['model'])
-
         if args.use_ema:
             if 'ema_model' in checkpoint:
                 ema_m.module.load_state_dict(utils.clean_state_dict(checkpoint['ema_model']))
             else:
                 del ema_m
-                ema_m = ModelEma(model, args.ema_decay)
+                ema_m = ModelEma(model, args.ema_decay)                
 
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
-            if lr_scheduler is not None and checkpoint.get('lr_scheduler') is not None:
-                try:
-                    lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-                    logger.info("LR scheduler state loaded from checkpoint.")
-                except Exception as e:
-                    logger.info(f"Could not load LR scheduler state: {e}")
+            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
-
-            # Scheduler-Epoch synchronisieren
-            try:
-                expected_last_epoch = args.start_epoch - 1
-                if hasattr(lr_scheduler, "last_epoch") and lr_scheduler.last_epoch != expected_last_epoch:
-                    logger.info(f"[LR SYNC] correcting scheduler.last_epoch "
-                                f"{lr_scheduler.last_epoch} -> {expected_last_epoch}")
-                    lr_scheduler.last_epoch = expected_last_epoch
-            except Exception as e:
-                logger.info(f"[LR SYNC] skipped ({e})")
-
-        # RNG-Zustände wiederherstellen
-        import random as _rnd, numpy as _np, torch as _th
-        if 'py_rng_state' in checkpoint:    _rnd.setstate(checkpoint['py_rng_state'])
-        if 'np_rng_state' in checkpoint:    _np.random.set_state(checkpoint['np_rng_state'])
-        if 'torch_rng_state' in checkpoint: _th.set_rng_state(checkpoint['torch_rng_state'])
-        if 'cuda_rng_state_all' in checkpoint and _th.cuda.is_available():
-            _th.cuda.set_rng_state_all(checkpoint['cuda_rng_state_all'])
-
-        # global_step aus Checkpoint lesen (falls vorhanden)
-        try:
-            if isinstance(checkpoint, dict):
-                global_step = int(checkpoint.get('global_step', 0))
-            else:
-                global_step = 0
-        except Exception:
-            global_step = 0
-        logger.info(f"[resume] restored global_step={global_step}")
-
 
     if (not args.resume) and args.pretrain_model_path:
         checkpoint = torch.load(args.pretrain_model_path, map_location='cpu')['model']
@@ -404,6 +310,20 @@ def main(args):
                 ema_m = ModelEma(model, args.ema_decay)        
 
 
+    if args.eval:
+        os.environ['EVAL_FLAG'] = 'TRUE'
+        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                              data_loader_val, base_ds, device, args.output_dir, wo_class_error=wo_class_error, args=args)
+        if args.output_dir:
+            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
+
+        log_stats = {**{f'test_{k}': v for k, v in test_stats.items()} }
+        if args.output_dir and utils.is_main_process():
+            with (output_dir / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")
+
+        return
+
     shutil.copy(os.path.dirname(os.path.realpath(__file__)) + '/simulation.py', output_dir / 'simulation.py')
 
     with open(output_dir / 'settings.txt', 'a+') as f:
@@ -412,10 +332,6 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
-
-    if args.eval:
-        os.environ['EVAL_FLAG'] = 'TRUE'
-
     for epoch in range(args.start_epoch, args.epochs):
         dataset = SimulationDataset()
         data_loader = torch.utils.data.DataLoader(
@@ -425,78 +341,42 @@ def main(args):
             num_workers=0,
             collate_fn=collate_fn
         )
-
         epoch_start_time = time.time()
-        logger.info(f"[epoch {epoch}] start")
-
-        # Zeitbasierte / Signal-basierte Mid-Epoch-Checkpoints
-        save_every_sec = int(getattr(args, 'save_every_minutes', 0)) * 60 if hasattr(args, 'save_every_minutes') else 0
-        _next_time_save = [time.time() + save_every_sec]
-
-        def _should_save_now():
-            if _GOT_SIGUSR1:
-                return True
-            if save_every_sec > 0 and time.time() >= _next_time_save[0]:
-                _next_time_save[0] = time.time() + save_every_sec
-                return True
-            return False
-
-        def _do_save_mid_epoch(tag):
-            scheduler_to_save = lr_scheduler
-            weights = _make_weights(
-                model_without_ddp, optimizer, scheduler_to_save, epoch, args,
-                train_stats={'global_step': global_step}
-            )
-            if args.use_ema:
-                weights['ema_model'] = ema_m.module.state_dict()
-            _save_ckpt(output_dir, weights, extra_tag=tag)
-            global _GOT_SIGUSR1
-            if _GOT_SIGUSR1:
-                _GOT_SIGUSR1 = False
-
         train_stats = train_one_epoch(
             model, criterion, data_loader, optimizer, device, epoch,
-            args.clip_max_norm, wo_class_error=wo_class_error,
-            lr_scheduler=lr_scheduler, args=args,
-            logger=(logger if args.save_log else None),
-            ema_m=ema_m,
-            should_save_callback=_should_save_now,
-            save_callback=_do_save_mid_epoch,
-            global_step=global_step,
-        )
-        # global_step aus train_stats übernehmen
-        global_step = int(train_stats.get('global_step', global_step))
+            args.clip_max_norm, wo_class_error=wo_class_error, lr_scheduler=lr_scheduler, args=args, logger=(logger if args.save_log else None), ema_m=ema_m)
+        if args.output_dir:
+            checkpoint_paths = [output_dir / 'checkpoint.pth']
 
-        # Logs
+        if not args.onecyclelr:
+            lr_scheduler.step()
+        if args.output_dir:
+            checkpoint_paths = [output_dir / 'checkpoint.pth']
+            # extra checkpoint before LR drop and every 100 epochs
+            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_checkpoint_interval == 0:
+                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+            for checkpoint_path in checkpoint_paths:
+                weights = {
+                    'model': model_without_ddp.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'epoch': epoch,
+                    'args': args,
+                }
+                if args.use_ema:
+                    weights.update({
+                        'ema_model': ema_m.module.state_dict(),
+                    })
+                utils.save_on_master(weights, checkpoint_path)
+                
+        # eval
         with open(output_dir / 'training_stats.txt', 'a+') as f:
             f.write('epoch: ' + str(epoch) + str(train_stats) + "\n")
-        with open(output_dir / 'bbox_loss.txt', 'a+') as f:
+        with open(output_dir  / 'bbox_loss.txt', 'a+') as f:
             f.write('epoch: ' + str(epoch) + ' loss_bbox: ' + str(train_stats['loss_bbox']) + "\n")
-        with open(output_dir / 'loss_giou.txt', 'a+') as f:
+        with open(output_dir  / 'loss_giou.txt', 'a+') as f:
             f.write('epoch: ' + str(epoch) + ' loss_giou: ' + str(train_stats['loss_giou']) + "\n")
 
-        # LR-Scheduler pro Epoche updaten (wie vorher)
-        if lr_scheduler is not None:
-            lr_scheduler.step()
-
-
-        # Am Ende der Epoche Haupt-Checkpoint speichern
-        if args.output_dir:
-            scheduler_to_save = lr_scheduler
-            weights = _make_weights(
-                model_without_ddp, optimizer, scheduler_to_save, epoch, args,
-                train_stats={'global_step': global_step}
-            )
-            if args.use_ema:
-                weights['ema_model'] = ema_m.module.state_dict()
-            _save_ckpt(output_dir, weights)
-
-            # optional: Zusatz-Checkpoints alle N Epochen
-            save_every = getattr(args, 'save_checkpoint_interval', None)
-            if save_every and (epoch + 1) % save_every == 0:
-                _save_ckpt(output_dir, weights, extra_tag=f"e{epoch:04}")
-
-        # --- Dein GIWAXS-Eval-Block bleibt UNVERÄNDERT dahinter ---
         class ImageProcessing():
 
             def __init__(self, model, postprocessors) -> None:
@@ -560,16 +440,8 @@ def main(args):
                 eval_ap = eval_ap_func(str(dset_path), epoch, output_dir)
                 with open(output_dir / 'exp_ap_40_polar.txt', 'a+') as f:
                     f.write(f"{eval_ap}\n")
-            else:
-                # Falls der Pfad doch mal nicht stimmt, explizite Meldung:
-                with open(output_dir / 'eval_error.txt', 'a+') as f:
-                    f.write(f"epoch {epoch}: dataset not found at {dset_path}\n")
-        except Exception as e:
-            import traceback
-            with open(output_dir / 'eval_error.txt', 'a+') as f:
-                f.write(f"epoch {epoch}: {repr(e)}\n{traceback.format_exc()}\n")
-
-
+        except:
+            pass
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -587,32 +459,19 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
+    if os.path.isfile(args.output_dir + '/checkpoint.pth'):
+        args.resume = args.output_dir + '/checkpoint.pth'
 
-    # Harmonisierung beider Flags
-    args.evaluate = bool(getattr(args, "evaluate", False) or getattr(args, "eval", False))
-    args.eval = args.evaluate
 
-    # Wenn im angegebenen output_dir bereits ein checkpoint.pth liegt: daraus resumin
-    ckpt_in_output = os.path.join(args.output_dir, 'checkpoint.pth')
-    if os.path.isfile(ckpt_in_output):
-        args.resume = ckpt_in_output
-
-    # Wenn resume gesetzt ist, output_dir auf den Checkpoint-Ordner setzen
-    if getattr(args, "resume", None):
-        resume_dir = os.path.dirname(args.resume)
-        if os.path.isdir(resume_dir):
-            args.output_dir = resume_dir
-
-    # Falls kein sinnvoller output_dir gesetzt ist: automatisch einen unter deinem Lustre-Root anlegen
-    if not args.output_dir:
-        root = '/mnt/lustre/work/schreiber/szb559/trainingoutputs'
+    if os.path.isdir('\\'.join(args.resume.split('\\')[0:-1])):
+        args.output_dir ='\\'.join(args.resume.split('\\')[0:-1])
+    else:
+        root = '/data/constantin/train_output/'
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        args.output_dir = os.path.join(root, f'dinodetr{timestamp}')
+        args.output_dir = root + 'dinodetr' + timestamp
 
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     args.export = False
-
-    print(args.output_dir)
-    main(args) 
+    main(args)
