@@ -536,8 +536,6 @@ class SwinTransformer(nn.Module):
 
         # build layers
         self.layers = nn.ModuleList()
-        # Beispiel: in __init__ oder per **kw übergeben
-        stop_down_at = getattr(self, "stop_down_at", None)  # None, 3 oder 2 etc.
         
         # prepare downsample list: standardmäßig überall PatchMerging außer letzter Stage
         downsamplelist = [PatchMerging for _ in range(self.num_layers)]
@@ -545,16 +543,6 @@ class SwinTransformer(nn.Module):
         
         # Kanalbreiten je Stage (wie üblich verdoppelt PatchMerging die Kanäle der nächsten Stage)
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
-        
-        # Anwenden des Stopp-Punkts: ab (stop_down_at) kein Downsampling mehr
-        if stop_down_at is not None:
-            # Beispiel: stop_down_at=3  -> Stage 3 UND 4 ohne weiteres Downsampling
-            for i in range(stop_down_at - 1, self.num_layers - 1):  # alle Übergänge ab stop_down_at deaktivieren
-                downsamplelist[i] = None
-            # Wichtig: Wenn PatchMerging wegfällt, darf die Kanalzahl in der Folgestage NICHT mehr automatisch verdoppeln.
-            # Passe daher num_features ab der Folgestage an:
-            for i in range(stop_down_at, self.num_layers):
-                num_features[i] = num_features[stop_down_at - 1]
         
         # Optional: bestehende dilation-Logik berücksichtigen (falls du beides unterstützen willst)
         if self.dilation:
