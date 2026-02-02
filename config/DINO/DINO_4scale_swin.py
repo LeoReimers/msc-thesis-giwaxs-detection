@@ -2,7 +2,7 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-lr = 0.00001
+lr=1e-05
 param_dict_type = 'default'
 lr_backbone = 1e-05
 lr_backbone_names = ['backbone.0']
@@ -11,13 +11,12 @@ lr_linear_proj_mult = 0.1
 ddetr_lr_param = False
 batch_size = 2
 weight_decay = 0.0001
-epochs = 500
+epochs = 350
 lr_drop = 280
 save_checkpoint_interval = 1000
 clip_max_norm = 0.1
 onecyclelr = False
 multi_step_lr = False
-lr_drop_list = [33, 45]
 
 
 modelname = 'dino'
@@ -110,4 +109,3 @@ ema_decay = 0.9997
 ema_epoch = 0
 
 use_detached_boxes_dec_out = False
-

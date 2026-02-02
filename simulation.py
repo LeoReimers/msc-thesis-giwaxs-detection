@@ -732,7 +732,7 @@ class FastSimulation(object):
     def filter_peaks_detector_gap(self, boxes_peaks_on_rings):
         if self.detector_mask:
             boxes_as_masks = self.boxes_to_masks(boxes_peaks_on_rings)        
-            return torch.logical_not(torch.any(self.idx_black & boxes_as_masks, dim=(1,2)))
+            return torch.logical_not((self.idx_black & boxes_as_masks).any(dim=2).any(dim=1))
         return torch.ones(size=(len(boxes_peaks_on_rings),), dtype=torch.bool ,device=self.device)
 
 
@@ -1054,3 +1054,4 @@ def torch_uniform(low=0, high=1, *sizes, device='cuda'):
 _SMOOTH_KERNEL = [[1., 1., 1.],
                   [1., 0.3, 1.],
                   [1., 1., 1.]]
+                  
