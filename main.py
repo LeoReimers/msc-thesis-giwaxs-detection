@@ -49,19 +49,28 @@ def box_xyxy_to_cxcywh(x):
 
 class SimulationDataset(torch.utils.data.Dataset):
 
-    def __init__(self, transforms = None, device = 'cuda'):
-
-        self.device = 'cuda'
+    def __init__(self, transforms=None, device='cuda'):
+        self.device = device
         self.transforms = transforms
-        self.simulation = FastSimulation(device=self.device)        
-
+        self.simulation = FastSimulation(device=self.device)
+       
     def __getitem__(self, idx):
         image = None
+        attempt = 0
         while image is None:
             try:
                 image, boxes, mask = self.simulation.simulate_img()
-            except:
-                pass 
+            except Exception as e:
+                attempt += 1
+                # Nur alle 10 oder 100 Versuche printen
+                if attempt == 1 or attempt % 10 == 0:
+                    print(f"[ERROR] Simulation failed (attempt {attempt}): {e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                # Notbremse nach 1000 Fehlversuchen
+                if attempt > 1000:
+                    raise e 
 
         image = image.repeat(3, 1, 1)
         num_objects = len(boxes[0:])
@@ -172,6 +181,12 @@ def build_model_main(args):
 
 def main(args):
     #utils.init_distributed_mode(args)
+    args.distributed = False
+    args.world_size = 1
+    args.rank = 0
+    args.local_rank = 0
+    args.gpu = 0
+    
     dataset = SimulationDataset()
     # load cfg file and update the args
     print("Loading config file from {}".format(args.config_file))
@@ -459,19 +474,14 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
-    if os.path.isfile(args.output_dir + '/checkpoint.pth'):
-        args.resume = args.output_dir + '/checkpoint.pth'
-
-
-    if os.path.isdir('\\'.join(args.resume.split('\\')[0:-1])):
-        args.output_dir ='\\'.join(args.resume.split('\\')[0:-1])
-    else:
-        root = '/data/constantin/train_output/'
+    if not args.output_dir:
+        # HIER DEINEN PFAD EINTRAGEN:
+        root = '/mnt/lustre/work/schreiber/szb559/trainingoutputs'
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        args.output_dir = root + 'dinodetr' + timestamp
+        args.output_dir = os.path.join(root, f'dinodetr{timestamp}')
 
+    # Ordner erstellen
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    args.export = False
     main(args)

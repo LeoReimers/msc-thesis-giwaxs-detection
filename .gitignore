@@ -1,3 +1,10 @@
+# Python bytecode / caches
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # Trainings-Outputs & Daten
 output/
 data/
@@ -15,9 +22,9 @@ models/dino/ops/*.so
 *.pt
 *.ckpt
 *.log
-runs/              # TensorBoard (falls genutzt)
-wandb/             # Weights & Biases (falls genutzt)
-slurm-*.out        # SLURM-Logs
+runs/
+wandb/
+slurm-*.out
 slurm-*.err
 
 # Python/Tooling
