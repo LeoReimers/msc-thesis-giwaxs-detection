@@ -274,23 +274,97 @@ class PatchMerging(nn.Module):
             x: Input feature, tensor size (B, H*W, C).
             H, W: Spatial resolution of the input feature.
         """
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
 
+        # calculate attention mask for SW-MSA
+        Hp = int(np.ceil(H / self.window_size_h)) * self.window_size_h
+        Wp = int(np.ceil(W / self.window_size_w)) * self.window_size_w
+        img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # 1 Hp Wp 1
+        h_slices = (slice(0, -self.window_size_h),
+                    slice(-self.window_size_h, -self.shift_size_h),
+                    slice(-self.shift_size_h, None))
+        w_slices = (slice(0, -self.window_size_w),
+                    slice(-self.window_size_w, -self.shift_size_w),
+                    slice(-self.shift_size_w, None))
+        cnt = 0
+        for h in h_slices:
+            for w in w_slices:
+                img_mask[:, h, w, :] = cnt
+                cnt += 1
+
+        mask_windows = window_partition(img_mask, self.window_size_h, self.window_size_w)  # nW, window_size, window_size, 1
+        mask_windows = mask_windows.view(-1, self.window_size_h * self.window_size_w)
+        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+
+        for blk in self.blocks:
+            blk.H, blk.W = H, W
+            if self.use_checkpoint:
+                x = checkpoint.checkpoint(blk, x, attn_mask)
+            else:
+                x = blk(x, attn_mask)
+        
+        if self.downsample is not None:
+            x_down = self.downsample(x, H, W)
+            
+            # --- FIX: Korrekte Berechnung der neuen Größe für das nächste Layer ---
+            if hasattr(self.downsample, 'rh') and hasattr(self.downsample, 'rw'):
+                # Wenn wir AdaptivePatchMerging nutzen, die dortigen Faktoren nehmen
+                # (H + rh - 1) // rh entspricht ceil(H / rh)
+                Wh = (H + self.downsample.rh - 1) // self.downsample.rh
+                Ww = (W + self.downsample.rw - 1) // self.downsample.rw
+            else:
+                # Standard Swin Fall (immer durch 2 teilen)
+                Wh, Ww = (H + 1) // 2, (W + 1) // 2
+            # ----------------------------------------------------------------------
+
+            return x, H, W, x_down, Wh, Ww
+        else:
+            return x, H, W, x, H, W
+        
+class AdaptivePatchMerging(nn.Module):
+    """
+    Erlaubt asymmetrisches Downsampling (z.B. H/2, W/1).
+    Ersetzt das Standard PatchMerging.
+    """
+    def __init__(self, dim, norm_layer=nn.LayerNorm, reduction_factor=(2, 2)):
+        super().__init__()
+        self.dim = dim
+        self.rh, self.rw = reduction_factor # rh=Height reduction, rw=Width reduction
+        
+        # Input: dim * (rh * rw) -> Output: 2 * dim (immer Kanalverdopplung wie bei Swin)
+        self.input_dim = dim * self.rh * self.rw
+        self.output_dim = 2 * dim
+
+        self.reduction = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        self.norm = norm_layer(self.input_dim)
+        
+        # --- NEU: Sanfte Initialisierung ---
+        self._init_weights()
+
+    def _init_weights(self):
+        from timm.models.layers import trunc_normal_
+        trunc_normal_(self.reduction.weight, std=0.02)
+
+    def forward(self, x, H, W):
+        B, L, C = x.shape
+        assert L == H * W, "Input feature size wrong"
+        
         x = x.view(B, H, W, C)
 
-        # padding
-        pad_input = (H % 2 == 1) or (W % 2 == 1)
+        # Padding falls H oder W nicht teilbar durch Faktor
+        pad_input = (H % self.rh != 0) or (W % self.rw != 0)
         if pad_input:
-            x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
+            x = F.pad(x, (0, 0, 0, W % self.rw, 0, H % self.rh))
 
-        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
-        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
-        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
-        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 C
-        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
-        x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
-
+        # Sammle Pixel basierend auf Reduction Factor (rh, rw)
+        patches = []
+        for i in range(self.rh):
+            for j in range(self.rw):
+                patches.append(x[:, i::self.rh, j::self.rw, :])
+        
+        # Concatenate & Reduction
+        x = torch.cat(patches, -1) # B, H/rh, W/rw, C*rh*rw
+        x = x.view(B, -1, self.input_dim)
         x = self.norm(x)
         x = self.reduction(x)
 
@@ -333,9 +407,8 @@ class BasicLayer(nn.Module):
         super().__init__()
         self.window_size_h = window_size_h
         self.window_size_w = window_size_w
-        self.shift_size_h =  window_size_h // 2
-        self.shift_size_w =  window_size_w // 2
-        #self.shift_size = window_size // 2
+        self.shift_size_h = window_size_h // 2
+        self.shift_size_w = window_size_w // 2
         self.depth = depth
         self.use_checkpoint = use_checkpoint
 
@@ -344,9 +417,8 @@ class BasicLayer(nn.Module):
             SwinTransformerBlock(
                 dim=dim,
                 num_heads=num_heads,
-                window_size_h = window_size_h,
-                window_size_w = window_size_w,
-                #window_size=window_size,
+                window_size_h=window_size_h,
+                window_size_w=window_size_w,
                 shift_size=0 if (i % 2 == 0) else window_size_w // 2,
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
@@ -397,9 +469,20 @@ class BasicLayer(nn.Module):
                 x = checkpoint.checkpoint(blk, x, attn_mask)
             else:
                 x = blk(x, attn_mask)
+        
         if self.downsample is not None:
             x_down = self.downsample(x, H, W)
-            Wh, Ww = (H + 1) // 2, (W + 1) // 2
+            
+            # --- FIX: Dynamische Berechnung der neuen Größe ---
+            # Prüft, ob unser AdaptivePatchMerging genutzt wird (hat Attribute rh/rw)
+            if hasattr(self.downsample, 'rh') and hasattr(self.downsample, 'rw'):
+                Wh = (H + self.downsample.rh - 1) // self.downsample.rh
+                Ww = (W + self.downsample.rw - 1) // self.downsample.rw
+            else:
+                # Standard Swin Fall (immer durch 2)
+                Wh, Ww = (H + 1) // 2, (W + 1) // 2
+            # --------------------------------------------------
+
             return x, H, W, x_down, Wh, Ww
         else:
             return x, H, W, x, H, W
@@ -500,7 +583,9 @@ class SwinTransformer(nn.Module):
                  out_indices=(0, 1, 2, 3),
                  frozen_stages=-1,
                  dilation=False,
-                 use_checkpoint=False):
+                 use_checkpoint=False,
+                 downsample_factors=None,
+                 **kwargs):
         super().__init__()
 
         self.pretrain_img_size = pretrain_img_size
@@ -533,27 +618,32 @@ class SwinTransformer(nn.Module):
 
         # stochastic depth
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+        
+        # --- START NEUER CODE ---
+        # 1. Downsampling-Strategie definieren
+        if downsample_factors is None:
+            # Falls nichts übergeben wurde, Standard (2, 2) nutzen
+            downsample_factors = [(2, 2) for _ in range(self.num_layers - 1)]
 
-        # build layers
-        self.layers = nn.ModuleList()
-        
-        # prepare downsample list: standardmäßig überall PatchMerging außer letzter Stage
-        downsamplelist = [PatchMerging for _ in range(self.num_layers)]
-        downsamplelist[-1] = None
-        
-        # Kanalbreiten je Stage (wie üblich verdoppelt PatchMerging die Kanäle der nächsten Stage)
-        num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
-        
-        # Optional: bestehende dilation-Logik berücksichtigen (falls du beides unterstützen willst)
-        if self.dilation:
-            downsamplelist[-2] = None
-            num_features[-1] = int(embed_dim * 2 ** (self.num_layers - 1)) // 2  # falls du die alte Semantik behalten willst
-        
-        # build layers
+        # 2. Features berechnen: Wir verdoppeln Kanäle IMMER (auch bei 2x1 Merge),
+        # damit DINO konsistente Channel-Größen (C, 2C, 4C, 8C) bekommt.
+        self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
+
+        # 3. Layer aufbauen
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
+            
+            # Bestimme Downsampling für das Ende dieser Stage
+            downsample_factory = None
+            if i_layer < self.num_layers - 1:
+                factors = downsample_factors[i_layer]
+                
+                # Lokale Factory-Funktion, damit BasicLayer die Klasse instanziieren kann
+                def downsample_factory(dim, norm_layer, f=factors):
+                    return AdaptivePatchMerging(dim, norm_layer, reduction_factor=f)
+
             layer = BasicLayer(
-                dim=num_features[i_layer],
+                dim=self.num_features[i_layer],
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
                 window_size_h=window_size_h,
@@ -565,20 +655,20 @@ class SwinTransformer(nn.Module):
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                 norm_layer=norm_layer,
-                downsample=downsamplelist[i_layer],
+                downsample=downsample_factory,
                 use_checkpoint=use_checkpoint
             )
             self.layers.append(layer)
+
+        print(f"[Swin] Initialized with downsample factors: {downsample_factors}")
+        # --- ENDE NEUER CODE ---
         
-        print(f"[Swin] num_features={num_features}, downsample={[d is not None for d in downsamplelist]}")
-
-
-        # num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
-        self.num_features = num_features
-
+        # Hier habe ich den "alten" Code gelöscht, der den Fehler verursacht hat.
+        
         # add a norm layer for each output
         for i_layer in out_indices:
-            layer = norm_layer(num_features[i_layer])
+            # WICHTIG: Hier self.num_features nutzen (statt num_features)
+            layer = norm_layer(self.num_features[i_layer])
             layer_name = f'norm{i_layer}'
             self.add_module(layer_name, layer)
 
@@ -657,6 +747,10 @@ class SwinTransformer(nn.Module):
         # outs:
         #   [torch.Size([2, 192, 256, 256]), torch.Size([2, 384, 128, 128]), \
         #       torch.Size([2, 768, 64, 64]), torch.Size([2, 1536, 32, 32])]
+        assert x.shape[1] == Wh * Ww, f"Before stage {i}: L={x.shape[1]} != H*W={Wh*Ww} (H={Wh}, W={Ww})"
+        x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)
+        assert x.shape[1] == Wh * Ww, f"After stage {i}:  L={x.shape[1]} != H*W={Wh*Ww} (H={Wh}, W={Ww})"
+
         return tuple(outs)
 
 
@@ -744,7 +838,7 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
             num_heads=[ 6, 12, 24, 48 ],
             window_size_h=8,
             window_size_w=32,
-            #in_chans=1
+            in_chans=1
         ),
 
     }
@@ -753,12 +847,18 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
     print(f"[INFO] Building {modelname} with window_size={kw_cgf.get('window_size', None)} "
       f"window_size_h={kw_cgf.get('window_size_h', None)} "
       f"window_size_w={kw_cgf.get('window_size_w', None)}")
+    # Check ob es schon in kw_cgf ist (da kw schon reingemerged wurde)
+    if 'swin' in modelname and 'downsample_factors' not in kw_cgf:
+        print("[INFO] Setting custom GIWAXS downsample factors: [(2,2), (2,1), (2,1)]")
+        # WICHTIG: Wir müssen kw_cgf updaten, da dieses Dictionary an die Klasse übergeben wird
+        kw_cgf['downsample_factors'] = [(2, 2), (2, 1), (2, 1)] 
+        
     model = SwinTransformer(pretrain_img_size=pretrain_img_size, **kw_cgf)
     return model
 
 if __name__ == "__main__":
     model = build_swin_transformer('swin_L_384_22k', 1024, dilation=True)
-    x = torch.rand(2, 3, 512, 1024)
-    y = model.forward_raw(x)
+    x = torch.rand(1, 3, 512, 1024)
+    y = model.forward(x)
     x = torch.rand(2, 3, 384, 384)
     y = model.forward_raw(x)
