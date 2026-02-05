@@ -590,7 +590,7 @@ class FastSimulation(object):
         intersection_mask = torch.any(boxes_and_masks, dim=0)
         intersection_mask = intersection_mask[None, :,:]
         boxes_to_keep = masks_to_boxes(intersection_mask)
-        torchvision.utils.save_image(img.float(),fp='/home/constantin/git_repos/object_detection/outputs/simulation/2.png')
+        #torchvision.utils.save_image(img.float(),fp='/home/constantin/git_repos/object_detection/outputs/simulation/2.png')
 
 
 

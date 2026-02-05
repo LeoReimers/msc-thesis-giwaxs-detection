@@ -570,7 +570,7 @@ class SwinTransformer(nn.Module):
             )
             self.layers.append(layer)
         
-        print(f"[Swin] stop_down_at={stop_down_at}, num_features={num_features}, downsample={[d is not None for d in downsamplelist]}")
+        print(f"[Swin] num_features={num_features}, downsample={[d is not None for d in downsamplelist]}")
 
 
         # num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
@@ -742,8 +742,8 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
             embed_dim=192,
             depths=[ 2, 2, 18, 2 ],
             num_heads=[ 6, 12, 24, 48 ],
-            window_size_h=24,
-            window_size_w=12,
+            window_size_h=8,
+            window_size_w=32,
             #in_chans=1
         ),
 
