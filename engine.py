@@ -260,9 +260,6 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
 
-        plot_results(samples[0].cpu().permute(1, 2, 0), results[0]['scores'].cpu(), results[0]['boxes'].cpu(), output_dir, epoch)
-        break
-
 
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
