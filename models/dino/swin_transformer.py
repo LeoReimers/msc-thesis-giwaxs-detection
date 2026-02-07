@@ -836,8 +836,8 @@ def build_swin_transformer(modelname, pretrain_img_size, **kw):
             embed_dim=192,
             depths=[ 2, 2, 18, 2 ],
             num_heads=[ 6, 12, 24, 48 ],
-            window_size_h=4,
-            window_size_w=4,
+            window_size_h=8,
+            window_size_w=32,
             #in_chans=1
         ),
 

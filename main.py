@@ -420,7 +420,7 @@ def main(args):
         dataset = SimulationDataset()
         data_loader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=4,
+            batch_size=2,
             shuffle=True,
             num_workers=0,
             collate_fn=collate_fn
