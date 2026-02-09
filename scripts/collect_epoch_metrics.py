@@ -12,6 +12,12 @@ Für jeden Run unter /mnt/lustre/work/schreiber/szb559/DINO/output/<RUN>/:
 Erzeugt EINEN Vergleichs-Plot (AP links, loss_giou rechts) für alle angegebenen Runs:
   /mnt/lustre/work/schreiber/szb559/DINO/Plots/compare_<runs>.png
 
+Histogram-Logging:
+  - schreibt Gruppenstatistik wie zuvor, aber in
+    /mnt/lustre/work/schreiber/szb559/DINO/Histograms/MetrixNew.txt
+  - zusätzlich 5. Metrik: best_AP_total_all_runs (Maximum von AP_total über alle Epochen
+    und alle in --run übergebenen Runs in diesem Script-Aufruf)
+
 Beispiel:
   python collect_epoch_metrics.py --run hold_70 hold_60 hold_50
 
@@ -38,12 +44,12 @@ PLOTS_BASE_DEFAULT  = "/mnt/lustre/work/schreiber/szb559/DINO/Plots"
 
 # Histogram-Logging-Defaults
 HISTOGRAM_BASE_DEFAULT = "/mnt/lustre/work/schreiber/szb559/DINO/Histograms"
-HISTOGRAM_METRIX_NAME  = "Metrix.txt"
+HISTOGRAM_METRIX_NAME  = "MetrixNew.txt"  # <-- neu
 
 # Anzahl der letzten Epochen für die Mittelwerte:
 # - separat einstellbar für loss_giou und AP_total
 MEAN_LAST_EPOCHS_LOSS = 8
-MEAN_LAST_EPOCHS_AP   = 13
+MEAN_LAST_EPOCHS_AP   = 8
 
 # Regex
 FLOAT_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
@@ -128,7 +134,6 @@ def parse_ap_total(run_dir: str, take_second: bool = True):
         ap_map = _parse_ap_from_polar_txt(polar_path)
 
     return ap_map
-
 
 
 def parse_loss_giou(training_stats_path: str):
@@ -233,6 +238,11 @@ def main():
     mean_loss_rows = []
     mean_ap_rows   = []
 
+    # --- neu: global best AP über alle Runs & Epochen dieses Aufrufs ---
+    best_ap_all = float("-inf")
+    best_ap_all_run = None
+    best_ap_all_epoch = None
+
     for i, run in enumerate(args.run):
         run_dir = os.path.join(args.output_base, run)
         if not os.path.isdir(run_dir):
@@ -251,6 +261,14 @@ def main():
 
         ap_vals = [ap_total_map.get(e, float("nan")) for e in epochs]
         lg_vals = [loss_giou_map.get(e, float("nan")) for e in epochs]
+
+        # --- neu: best AP pro Run und Update global best ---
+        for e, a in zip(epochs, ap_vals):
+            if isinstance(a, (int, float)) and math.isfinite(a):
+                if a > best_ap_all:
+                    best_ap_all = a
+                    best_ap_all_run = run
+                    best_ap_all_epoch = e
 
         # Je-Run TXT schreiben
         out_name = args.outfile_name or f"{run}_metrics.txt"
@@ -416,7 +434,16 @@ def main():
                     print("Standardabweichung (s) : n/a (n < 2)")
                     print("Standardfehler (SEM)   : n/a (n < 2)")
 
-        # ---------------- Histogram-Logging in Metrix.txt ----------------
+        # --- neu: best AP über alle Runs/Epochen dieses Aufrufs ausgeben ---
+        if math.isfinite(best_ap_all):
+            print("\n=== Best AP_total über alle übergebenen Runs (alle Epochen) ===")
+            print(f"Best AP_total          : {best_ap_all:.6f}")
+            print(f"Run                    : {best_ap_all_run}")
+            print(f"Epoch                  : {best_ap_all_epoch}")
+        else:
+            best_ap_all = float("nan")  # für konsistentes Logging
+
+        # ---------------- Histogram-Logging in MetrixNew.txt ----------------
         # Nur wenn:
         #  - mindestens 2 gültige Werte für beide Metriken (n_group_loss > 1, n_group_ap > 1),
         #  - group_mean_* und sem_group_* definiert,
@@ -446,9 +473,11 @@ def main():
                     with open(hist_file, "a", encoding="utf-8") as f:
                         if not file_exists:
                             # Headerzeile für sauberes Parsen in anderem Skript
-                            f.write("# group_name\tgroup_mean_loss_giou\tSEM_loss_giou\tgroup_mean_AP_total\tSEM_AP_total\n")
+                            f.write("# group_name\tgroup_mean_loss_giou\tSEM_loss_giou\t"
+                                    "group_mean_AP_total\tSEM_AP_total\tbest_AP_total_all_runs\n")
                         f.write(f"{group_name}\t{group_mean_loss:.6f}\t{sem_group_loss:.6f}\t"
-                                f"{group_mean_ap:.6f}\t{sem_group_ap:.6f}\n")
+                                f"{group_mean_ap:.6f}\t{sem_group_ap:.6f}\t"
+                                f"{best_ap_all:.6f}\n")
 
                     print(f"[OK] Gruppenstatistik für Histogramm nach {hist_file} geschrieben "
                           f"(Gruppe: {group_name})")

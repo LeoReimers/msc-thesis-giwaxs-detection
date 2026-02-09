@@ -104,7 +104,7 @@ dn_labelbook_size = 91
 match_unstable_error = True
 
 # for ema
-use_ema = False
+use_ema = True
 ema_decay = 0.9997
 ema_epoch = 0
 
