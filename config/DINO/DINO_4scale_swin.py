@@ -2,24 +2,24 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-lr = 0.5e-05                     # Start-LR = 5.0e-05
-lr_backbone = 0.5e-06            # optional: ~0.1 * lr (vorher: 1e-06)
+lr = 1.5e-05                     # Start-LR = 5.0e-05
+lr_backbone = 1.5e-06            # optional: ~0.1 * lr (vorher: 1e-06)
 param_dict_type = 'default'
 lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
 lr_linear_proj_mult = 0.1
 ddetr_lr_param = False
-batch_size = 1
+batch_size = 4
 weight_decay = 0.0001
-epochs = 420                   # Training bis Ep. 130 (wie in deinem Plan)
+epochs = 350                   # Training bis Ep. 130 (wie in deinem Plan)
 lr_drop = 1000                 # ignoriert, solange lr_drop_list gesetzt ist
 save_checkpoint_interval = 1000
 clip_max_norm = 0.1
 onecyclelr = False
 multi_step_lr = True
 
-lr_drop_list = [10, 15, 20, 300, 330] 
-lr_gammas    = [1.2, 1.3, 1.4, 0.5, 0.1]
+lr_drop_list = [5, 10, 15, 300] 
+lr_gammas    = [1.2, 1.3, 1.4, 0.1]
 
 
 frozen_stages = 2
