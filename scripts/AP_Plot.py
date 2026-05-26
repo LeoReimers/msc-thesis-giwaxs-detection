@@ -25,44 +25,43 @@ import matplotlib.pyplot as plt
 # USER-FACING PLOT SETTINGS (edit only this block)
 # ============================================================
 
-# Plot title (use None to fall back to a default)
-PLOT_TITLE = "Performance Metrics Across Window Sizes (350 Epochs)"
+# Plot title
+
+PLOT_TITLE = "Batch-size effects under the full stabilization configuration with APM (350 epochs)"
+
+#PLOT_TITLE = "Final comparison of the benchmark and optimized full-training configurations"
+#PLOT_TITLE = "Batch-size effects under the full stabilization configuration with APM (350 epochs)"
+#PLOT_TITLE = "Comparison of window geometries after 350 epochs with APM"
+#PLOT_TITLE = "APM under progressively stabilized training (120 epochs)"
+
+# Optional: Plot giou_loss alongside AP_total
+PLOT_GIOU_LOSS = True
 
 # Axis labels
-X_AXIS_LABEL = "Window Size"
-LEFT_Y_LABEL = "loss_giou"
-RIGHT_Y_LABEL = "AP_total"
+X_AXIS_LABEL = "Training configuration"
+Y_AXIS_LABEL_AP = "Mean AP_total"
+Y_AXIS_LABEL_LOSS = "Mean loss_giou"
 
-# Legend labels (what appears in the legend)
-LEGEND_LABEL_LOSS = "Mean loss_giou (± SEM)"
-LEGEND_LABEL_AP_MEAN = "Mean AP_total (± SEM)"
-LEGEND_LABEL_AP_BEST = "Max AP_total single value"
+# Legend labels
+LEGEND_LABEL_AP_MEAN = "Mean AP_total (+/- SEM)"
+LEGEND_LABEL_LOSS = "Mean loss_giou (+/- SEM)"
 
-# Optional: show ±2 SEM error bars (True/False)
-SHOW_SEM2 = True
+# Optional: show +/- 2 SEM error bars (True/False)
+SHOW_SEM2 = False
 
 # Optional: map internal group names to clean labels for the x-axis
-# If a key is missing, the code will auto-clean the name using CLEAN_PREFIXES below.
-LABEL_MAP = {
-    # "NEW_8x8": "8×8",
-    # "NEW_8x32": "8×32",
-    # "NEW_32x8": "32×8",
-    # "NEW_32x32": "32×32",
-}
+LABEL_MAP = {}
 
 # Optional: remove these prefixes from group names before displaying
 CLEAN_PREFIXES = ["NEW_", "Bl_", "Blank_", "EMA_", "Fin_", "Bs1_", "APMFin_"]
 
-# Optional: replace underscore separators after cleaning (e.g., "8x32" -> "8×32")
-REPLACE_X = True  # if True: "8x32" -> "8×32"
-
 # ---------------- adjustable y-axis ranges ----------------
-# If *_MIN / *_MAX = None -> automatic scaling
-Y_MIN_LOSS = 0.2
-Y_MAX_LOSS = 0.45
-
+# If Y_MIN / Y_MAX = None -> automatic scaling
 Y_MIN_AP = 0.6
 Y_MAX_AP = 0.8
+
+Y_MIN_LOSS = 0.2
+Y_MAX_LOSS = 0.3
 
 # ============================================================
 
@@ -75,10 +74,6 @@ HISTOGRAM_METRIX_NAME  = "MetrixNew.txt"
 def prettify_label(name: str) -> str:
     """
     Convert internal run/group names into clean x-axis labels.
-    Priority:
-      1) LABEL_MAP
-      2) strip CLEAN_PREFIXES
-      3) optionally replace 'x' with '×'
     """
     if name in LABEL_MAP:
         return LABEL_MAP[name]
@@ -89,20 +84,13 @@ def prettify_label(name: str) -> str:
             s = s[len(p):]
             break
 
-    # Common patterns: "NEW_8x32" -> "8x32" -> "8×32"
     s = s.replace("_", " ").strip()
-
-    if REPLACE_X:
-        # replace occurrences like "8x32" with "8×32"
-        s = s.replace("x", "×")
-
     return s
 
 
 def read_metrix_file(metrix_path):
     """
-    Read MetrixNew.txt and return dict:
-      { group_name: { mean_loss, sem_loss, mean_ap, sem_ap, best_ap } }
+    Read MetrixNew.txt and return dict with stats.
     """
     if not os.path.isfile(metrix_path):
         raise FileNotFoundError(f"Metrix file not found: {metrix_path}")
@@ -123,7 +111,6 @@ def read_metrix_file(metrix_path):
                 sem_loss  = float(parts[2])
                 mean_ap   = float(parts[3])
                 sem_ap    = float(parts[4])
-                best_ap   = float(parts[5])
             except ValueError:
                 continue
 
@@ -132,7 +119,6 @@ def read_metrix_file(metrix_path):
                 "sem_loss":  sem_loss,
                 "mean_ap":   mean_ap,
                 "sem_ap":    sem_ap,
-                "best_ap":   best_ap,
             }
     return group_stats
 
@@ -178,39 +164,34 @@ def main():
         return
 
     # Collect requested groups
-    raw_labels    = []
+    raw_labels     = []
     display_labels = []
-    means_loss    = []
-    sems_loss     = []
-    means_ap      = []
-    sems_ap       = []
-    best_aps      = []
+    means_ap       = []
+    sems_ap        = []
+    means_loss     = []
+    sems_loss      = []
 
     for g in args.run:
         if g not in group_stats:
-            print(f"[WARN] Group '{g}' not found in {metrix_path} – skipped.")
+            print(f"[WARN] Group '{g}' not found in {metrix_path} - skipped.")
             continue
 
         stats = group_stats[g]
+        mean_ap   = stats.get("mean_ap",  float("nan"))
+        sem_ap    = stats.get("sem_ap",   float("nan"))
         mean_loss = stats.get("mean_loss", float("nan"))
         sem_loss  = stats.get("sem_loss",  float("nan"))
-        mean_ap   = stats.get("mean_ap",   float("nan"))
-        sem_ap    = stats.get("sem_ap",    float("nan"))
-        best_ap   = stats.get("best_ap",   float("nan"))
 
-        if not (math.isfinite(mean_loss) and math.isfinite(sem_loss)
-                and math.isfinite(mean_ap) and math.isfinite(sem_ap)
-                and math.isfinite(best_ap)):
-            print(f"[WARN] Invalid values for group '{g}' – skipped.")
+        if not (math.isfinite(mean_ap) and math.isfinite(sem_ap)):
+            print(f"[WARN] Invalid AP values for group '{g}' - skipped.")
             continue
 
         raw_labels.append(g)
         display_labels.append(prettify_label(g))
-        means_loss.append(mean_loss)
-        sems_loss.append(sem_loss)
         means_ap.append(mean_ap)
         sems_ap.append(sem_ap)
-        best_aps.append(best_ap)
+        means_loss.append(mean_loss)
+        sems_loss.append(sem_loss)
 
     if not raw_labels:
         print("[ERROR] None of the specified groups could be read from MetrixNew.txt.")
@@ -218,58 +199,53 @@ def main():
 
     # X positions
     x = list(range(len(display_labels)))
-    bar_width = 0.25
-
-    x_loss    = [xi - bar_width for xi in x]
-    x_ap_mean = [xi for xi in x]
-    x_ap_best = [xi + bar_width for xi in x]
-
+    
     plt.figure(figsize=(9, 5))
-    ax_loss = plt.gca()
-    ax_ap   = ax_loss.twinx()
+    ax_ap = plt.gca()
 
-    # Loss bars (left axis)
-    ax_loss.bar(
-        x_loss,
-        means_loss,
-        width=bar_width,
-        alpha=0.8,
-        label=LEGEND_LABEL_LOSS
-    )
-    ax_loss.errorbar(
-        x_loss,
-        means_loss,
-        yerr=sems_loss,
-        fmt='none',
-        ecolor='black',
-        elinewidth=1.5,
-        capsize=5,
-        label="_nolegend_"
-    )
-    if SHOW_SEM2:
-        sem2_loss = [2.0 * s for s in sems_loss]
-        ax_loss.errorbar(
-            x_loss,
-            means_loss,
-            yerr=sem2_loss,
-            fmt='none',
-            ecolor='gray',
-            elinewidth=1.0,
-            capsize=3,
-            label="_nolegend_"
-        )
+    if PLOT_GIOU_LOSS:
+        # Two variables to plot -> narrower and shifted bars
+        bar_width = 0.35
+        x_ap   = [xi - bar_width/2 for xi in x]
+        x_loss = [xi + bar_width/2 for xi in x]
+        
+        ax_loss = ax_ap.twinx()
+        
+        # Mean Loss bars (right axis)
+        ax_loss.bar(x_loss, means_loss, width=bar_width, alpha=0.8, color="tab:blue", label=LEGEND_LABEL_LOSS)
+        ax_loss.errorbar(x_loss, means_loss, yerr=sems_loss, fmt='none', ecolor='black', elinewidth=1.5, capsize=5, label="_nolegend_")
+        
+        if SHOW_SEM2:
+            sem2_loss = [2.0 * s for s in sems_loss]
+            ax_loss.errorbar(x_loss, means_loss, yerr=sem2_loss, fmt='none', ecolor='gray', elinewidth=1.0, capsize=3, label="_nolegend_")
+            
+        ax_loss.set_ylabel(Y_AXIS_LABEL_LOSS)
+        
+        if (Y_MIN_LOSS is not None) or (Y_MAX_LOSS is not None):
+            cur_min, cur_max = ax_loss.get_ylim()
+            ax_loss.set_ylim(
+                Y_MIN_LOSS if Y_MIN_LOSS is not None else cur_min,
+                Y_MAX_LOSS if Y_MAX_LOSS is not None else cur_max
+            )
 
-    # Mean AP bars (right axis)
+    else:
+        # Only AP to plot -> wider and centered bars
+        bar_width = 0.5
+        x_ap = x
+
+    # Mean AP bars (left axis)
     ax_ap.bar(
-        x_ap_mean,
+        x_ap,
         means_ap,
         width=bar_width,
         alpha=0.8,
         color="orange",
         label=LEGEND_LABEL_AP_MEAN
     )
+    
+    # 1x SEM errorbars (AP)
     ax_ap.errorbar(
-        x_ap_mean,
+        x_ap,
         means_ap,
         yerr=sems_ap,
         fmt='none',
@@ -278,10 +254,12 @@ def main():
         capsize=5,
         label="_nolegend_"
     )
+    
+    # Optional 2x SEM errorbars (AP)
     if SHOW_SEM2:
         sem2_ap = [2.0 * s for s in sems_ap]
         ax_ap.errorbar(
-            x_ap_mean,
+            x_ap,
             means_ap,
             yerr=sem2_ap,
             fmt='none',
@@ -291,39 +269,21 @@ def main():
             label="_nolegend_"
         )
 
-    # Best AP bars (right axis)
-    ax_ap.bar(
-        x_ap_best,
-        best_aps,
-        width=bar_width,
-        alpha=0.8,
-        color="tab:green",
-        label=LEGEND_LABEL_AP_BEST
-    )
+    # X ticks + labels (rotation=0 f�r waagerechte Schrift)
+    ax_ap.set_xticks(x)
+    ax_ap.set_xticklabels(display_labels, rotation=0, ha='center')
 
-    # X ticks + labels
-    ax_loss.set_xticks(x)
-    ax_loss.set_xticklabels(display_labels, rotation=45, ha='right')
-
-    # Axis labels
-    ax_loss.set_xlabel(X_AXIS_LABEL)
-    ax_loss.set_ylabel(LEFT_Y_LABEL)
-    ax_ap.set_ylabel(RIGHT_Y_LABEL)
+    # Axis labels (Hier wurde labelpad=15 hinzugef�gt)
+    ax_ap.set_xlabel(X_AXIS_LABEL, labelpad=15)
+    ax_ap.set_ylabel(Y_AXIS_LABEL_AP)
 
     # Title
     plot_title = args.title if args.title is not None else PLOT_TITLE
     if plot_title is None:
         plot_title = "Window Size Comparison"
-    ax_loss.set_title(plot_title)
+    ax_ap.set_title(plot_title)
 
-    # Y-limits
-    if (Y_MIN_LOSS is not None) or (Y_MAX_LOSS is not None):
-        cur_min, cur_max = ax_loss.get_ylim()
-        ax_loss.set_ylim(
-            Y_MIN_LOSS if Y_MIN_LOSS is not None else cur_min,
-            Y_MAX_LOSS if Y_MAX_LOSS is not None else cur_max
-        )
-
+    # Y-limits (AP)
     if (Y_MIN_AP is not None) or (Y_MAX_AP is not None):
         cur_min, cur_max = ax_ap.get_ylim()
         ax_ap.set_ylim(
@@ -331,25 +291,16 @@ def main():
             Y_MAX_AP if Y_MAX_AP is not None else cur_max
         )
 
-    ax_loss.grid(True, axis='y', linestyle='--', alpha=0.5)
-
-    # Legend
-    handles_loss, labels_loss = ax_loss.get_legend_handles_labels()
-    handles_ap, labels_ap     = ax_ap.get_legend_handles_labels()
-
-    handles = handles_loss + handles_ap
-    labels_legend = labels_loss + labels_ap
-
-    seen = set()
-    handles_unique = []
-    labels_unique = []
-    for h, lab in zip(handles, labels_legend):
-        if lab not in seen and not lab.startswith("_"):
-            seen.add(lab)
-            handles_unique.append(h)
-            labels_unique.append(lab)
-
-    ax_loss.legend(handles_unique, labels_unique, loc="upper right", fontsize=8)
+    # Grid & Legend
+    ax_ap.grid(True, axis='y', linestyle='--', alpha=0.5)
+    
+    if PLOT_GIOU_LOSS:
+        # Combine legends from both axes
+        handles_ap, labels_ap     = ax_ap.get_legend_handles_labels()
+        handles_loss, labels_loss = ax_loss.get_legend_handles_labels()
+        ax_ap.legend(handles_ap + handles_loss, labels_ap + labels_loss, loc="upper right", fontsize=10)
+    else:
+        ax_ap.legend(loc="upper right", fontsize=10)
 
     plt.tight_layout()
 
@@ -361,7 +312,7 @@ def main():
         name_join = "_".join(raw_labels)
         if len(name_join) > 80:
             name_join = name_join[:80] + "..."
-        out_file = os.path.join(hist_dir, f"hist_{name_join}.png")
+        out_file = os.path.join(hist_dir, f"hist_AP_{name_join}.png")
 
     plt.savefig(out_file, dpi=args.dpi)
     plt.close()

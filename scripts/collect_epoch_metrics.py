@@ -32,7 +32,7 @@ from collections import defaultdict
 # ============================================================
 
 # If None -> fall back to automatic title construction
-PLOT_TITLE = "AP and Loss_giou over Training Epochs"  # e.g. "AP vs loss_giou over epochs (Phase I, b4 8×8)"
+PLOT_TITLE = "Training dynamics of benchmark and final full-training configurations"  # e.g. "AP vs loss_giou over epochs (Phase I, b4 8×8)"
 
 # Axis labels
 X_AXIS_LABEL = "Epoch"
