@@ -2,8 +2,8 @@ _base_ = ['coco_transformer.py']
 
 num_classes=91
 
-lr = 1e-05                     # Start-LR = 5.0e-05
-lr_backbone = 1e-05            # optional: ~0.1 * lr (vorher: 1e-06)
+lr = 1.5e-05                     # Start-LR = 5.0e-05
+lr_backbone = 1.5e-05            # optional: ~0.1 * lr (vorher: 1e-06)
 param_dict_type = 'default'
 lr_backbone_names = ['backbone.0']
 lr_linear_proj_names = ['reference_points', 'sampling_offsets']
@@ -12,17 +12,17 @@ ddetr_lr_param = False
 batch_size = 2
 weight_decay = 0.0001
 epochs = 350                   # Training bis Ep. 130 (wie in deinem Plan)
-lr_drop = 280                 # ignoriert, solange lr_drop_list gesetzt ist
+lr_drop = 1000                 # ignoriert, solange lr_drop_list gesetzt ist
 save_checkpoint_interval = 1000
 clip_max_norm = 0.1
 onecyclelr = False
-multi_step_lr = False
+multi_step_lr = True
 
 lr_drop_list = [5, 10, 15, 300] 
 lr_gammas    = [1.2, 1.3, 1.4, 0.1]
 
 
-frozen_stages = 0
+frozen_stages = 2
 modelname = 'dino'
 frozen_weights = None
 backbone = 'swin_L_384_22k'
@@ -108,7 +108,7 @@ dn_labelbook_size = 91
 match_unstable_error = True
 
 # for ema
-use_ema = False
+use_ema = True
 ema_decay = 0.9997
 ema_epoch = 0
 

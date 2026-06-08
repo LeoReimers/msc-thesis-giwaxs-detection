@@ -25,7 +25,7 @@ WINDOW_W="${3:-4}"
 PARTITION="${PARTITION:-a100-galvani,a100-fat-galvani,a100-preemptable-galvani}"
 CPUS="${CPUS:-8}"
 MEM="${MEM:-96G}"
-TIME_LIMIT="${TIME_LIMIT:-40:00:00}"
+TIME_LIMIT="${TIME_LIMIT:-45:00:00}"
 GPUS="${GPUS:-1}"
 JOB_NAME="${JOB_NAME:-dino_swin}"
 
