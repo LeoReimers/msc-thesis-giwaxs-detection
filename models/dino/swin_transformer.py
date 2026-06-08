@@ -177,7 +177,7 @@ class SwinTransformerBlock(nn.Module):
         self.window_size_w = window_size_w
         #self.window_size = window_size
 
-        self.shift_size = shift_size          # W-Shift: window_size_w // 2 f�r shifted Blocks
+        self.shift_size = shift_size          # W-Shift: window_size_w // 2 für shifted Blocks
         self.shift_size_h = window_size_h // 2 if shift_size > 0 else 0  # H-Shift: window_size_h // 2
         self.mlp_ratio = mlp_ratio
         assert 0 <= self.shift_size < self.window_size_w, "shift_size must in 0-window_size"
@@ -537,14 +537,14 @@ class SwinTransformer(nn.Module):
 
         # build layers
         self.layers = nn.ModuleList()
-        # Beispiel: in __init__ oder per **kw ?bergeben
+        # Beispiel: in __init__ oder per **kw übergeben
         stop_down_at = getattr(self, "stop_down_at", None)  # None, 3 oder 2 etc.
         
-        # prepare downsample list: standardm??ig ?berall PatchMerging au?er letzter Stage
+        # prepare downsample list: standardmäßig überall PatchMerging außer letzter Stage
         downsamplelist = [PatchMerging for _ in range(self.num_layers)]
         downsamplelist[-1] = None
         
-        # Kanalbreiten je Stage (wie ?blich verdoppelt PatchMerging die Kan?le der n?chsten Stage)
+        # Kanalbreiten je Stage (wie üblich verdoppelt PatchMerging die Kanäle der nächsten Stage)
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
         
         # Anwenden des Stopp-Punkts: ab (stop_down_at) kein Downsampling mehr
@@ -552,12 +552,12 @@ class SwinTransformer(nn.Module):
             # Beispiel: stop_down_at=3  -> Stage 3 UND 4 ohne weiteres Downsampling
             for i in range(stop_down_at - 1, self.num_layers - 1):  # alle ?berg?nge ab stop_down_at deaktivieren
                 downsamplelist[i] = None
-            # Wichtig: Wenn PatchMerging wegf?llt, darf die Kanalzahl in der Folgestage NICHT mehr automatisch verdoppeln.
+            # Wichtig: Wenn PatchMerging wegfällt, darf die Kanalzahl in der Folgestage NICHT mehr automatisch verdoppeln.
             # Passe daher num_features ab der Folgestage an:
             for i in range(stop_down_at, self.num_layers):
                 num_features[i] = num_features[stop_down_at - 1]
         
-        # Optional: bestehende dilation-Logik ber?cksichtigen (falls du beides unterst?tzen willst)
+        # Optional: bestehende dilation-Logik berücksichtigen (falls du beides unterstützen willst)
         if self.dilation:
             downsamplelist[-2] = None
             num_features[-1] = int(embed_dim * 2 ** (self.num_layers - 1)) // 2  # falls du die alte Semantik behalten willst
