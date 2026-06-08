@@ -177,8 +177,7 @@ class SwinTransformerBlock(nn.Module):
         self.window_size_w = window_size_w
         #self.window_size = window_size
 
-        self.shift_size = shift_size          # W-Shift: window_size_w // 2 für shifted Blocks
-        self.shift_size_h = window_size_h // 2 if shift_size > 0 else 0  # H-Shift: window_size_h // 2
+        self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
         assert 0 <= self.shift_size < self.window_size_w, "shift_size must in 0-window_size"
 
@@ -222,7 +221,7 @@ class SwinTransformerBlock(nn.Module):
 
         # cyclic shift
         if self.shift_size > 0:
-            shifted_x = torch.roll(x, shifts=(-self.shift_size_h, -self.shift_size), dims=(1, 2))
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             attn_mask = mask_matrix
         else:
             shifted_x = x
@@ -241,7 +240,7 @@ class SwinTransformerBlock(nn.Module):
 
         # reverse cyclic shift
         if self.shift_size > 0:
-            x = torch.roll(shifted_x, shifts=(self.shift_size_h, self.shift_size), dims=(1, 2))
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
 
@@ -550,7 +549,7 @@ class SwinTransformer(nn.Module):
         # Anwenden des Stopp-Punkts: ab (stop_down_at) kein Downsampling mehr
         if stop_down_at is not None:
             # Beispiel: stop_down_at=3  -> Stage 3 UND 4 ohne weiteres Downsampling
-            for i in range(stop_down_at - 1, self.num_layers - 1):  # alle ?berg?nge ab stop_down_at deaktivieren
+            for i in range(stop_down_at - 1, self.num_layers - 1):  # alle Übergänge ab stop_down_at deaktivieren
                 downsamplelist[i] = None
             # Wichtig: Wenn PatchMerging wegfällt, darf die Kanalzahl in der Folgestage NICHT mehr automatisch verdoppeln.
             # Passe daher num_features ab der Folgestage an:
