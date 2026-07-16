@@ -169,12 +169,28 @@ def build_backbone(args):
                                 return_interm_indices,   
                                 batch_norm=FrozenBatchNorm2d)
         bb_num_channels = backbone.num_channels
+
     elif args.backbone in ['swin_T_224_1k', 'swin_B_224_22k', 'swin_B_384_22k', 'swin_L_224_22k', 'swin_L_384_22k']:
         pretrain_img_size = int(args.backbone.split('_')[-2])
-        backbone = build_swin_transformer(args.backbone, \
-                    pretrain_img_size=pretrain_img_size, \
-                    out_indices=tuple(return_interm_indices), \
-                dilation=args.dilation, use_checkpoint=use_checkpoint)
+
+        # [PATCH] Nur vorhandene Args als **kwargs weiterreichen, damit Defaults nicht mit None überschrieben werden
+        swin_kwargs = {}
+        for k in ['window_size_h', 'window_size_w', 'patch_size_h', 'patch_size_w',
+                  'embed_dim', 'depths', 'num_heads', 'stop_down_at']:
+            if hasattr(args, k):
+                v = getattr(args, k)
+                if v is not None:
+                    swin_kwargs[k] = v
+
+
+        backbone = build_swin_transformer(
+                    args.backbone,
+                    pretrain_img_size=pretrain_img_size,
+                    out_indices=tuple(return_interm_indices),
+                    dilation=args.dilation,
+                    use_checkpoint=use_checkpoint,
+                    **swin_kwargs)  # [PATCH]                
+        print("[DEBUG] patch_embed.in_chans =", backbone.patch_embed.in_chans)
 
         # freeze some layers
         if backbone_freeze_keywords is not None:
@@ -183,6 +199,7 @@ def build_backbone(args):
                     if keyword in name:
                         parameter.requires_grad_(False)
                         break
+
         if "backbone_dir" in args:
             pretrained_dir = args.backbone_dir
             PTDICT = {
@@ -202,18 +219,21 @@ def build_backbone(args):
             _tmp_st = OrderedDict({k:v for k, v in clean_state_dict(checkpoint).items() if key_select_function(k)})
             _tmp_st_output = backbone.load_state_dict(_tmp_st, strict=False)
             print(str(_tmp_st_output))
+
         bb_num_channels = backbone.num_features[4 - len(return_interm_indices):]
+
     elif args.backbone in ['convnext_xlarge_22k']:
         backbone = build_convnext(modelname=args.backbone, pretrained=True, out_indices=tuple(return_interm_indices),backbone_dir=args.backbone_dir)
         bb_num_channels = backbone.dims[4 - len(return_interm_indices):]
+
     else:
         raise NotImplementedError("Unknown backbone {}".format(args.backbone))
     
 
     assert len(bb_num_channels) == len(return_interm_indices), f"len(bb_num_channels) {len(bb_num_channels)} != len(return_interm_indices) {len(return_interm_indices)}"
 
-
     model = Joiner(backbone, position_embedding)
-    model.num_channels = bb_num_channels 
-    assert isinstance(bb_num_channels, List), "bb_num_channels is expected to be a List but {}".format(type(bb_num_channels))
+    model.num_channels = bb_num_channels
+    # [PATCH] typing.List taugt nicht für isinstance-Checks
+    assert isinstance(bb_num_channels, (list, tuple)), "bb_num_channels is expected to be list/tuple but {}".format(type(bb_num_channels))
     return model
