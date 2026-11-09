@@ -8,10 +8,20 @@ For everything that is not specific to this thesis (model architecture, installa
 
 ## What this thesis adds
 
-- Correction of the cyclic shift in Shifted-Window Attention for asymmetric windows (separate `shift_size_h` and `shift_size_w`).
-- Systematic comparison of rectangular attention windows in the Swin backbone (`window_size_h`, `window_size_w`).
-- Adaptive Patch Merging (APM): optional asymmetric downsampling between Swin stages.
-- Training options: learning-rate schedule with warm-up (`lr_drop_list`, `lr_gammas`), EMA of the model weights, frozen backbone stages (`frozen_stages`), and a separate backbone learning rate.
+- Rectangular attention windows in the Swin backbone (`window_size_h`, `window_size_w`) and their systematic comparison.
+- Training options: learning-rate schedule with warm-up (`lr_drop_list`, `lr_gammas`), EMA of the model weights (`use_ema`, `ema_decay`), frozen backbone stages (`frozen_stages`), and a separate backbone learning rate (`lr_backbone`).
+- Correction of the cyclic shift in Shifted-Window Attention for asymmetric windows (separate height and width shifts): branch [`corrected-shift`](https://github.com/LeoReimers/msc-thesis-giwaxs-detection/tree/corrected-shift).
+- Adaptive Patch Merging (APM), asymmetric downsampling with factors (2,2), (2,1), (2,1): branch [`apm`](https://github.com/LeoReimers/msc-thesis-giwaxs-detection/tree/apm).
+
+## Code versions
+
+The final configuration uses neither APM nor the corrected shift, so `main` contains the code without them. The two variants are kept in separate branches:
+
+| Branch | Runs in the thesis |
+|---|---|
+| `main` | runs without APM and with the original shift, including the stepwise comparison (Section 4.3.3, steps Ref to +lrbb) |
+| `apm` | runs with APM: APM comparison over 120 epochs (Section 4.2.2), window-geometry and batch-size comparisons (Sections 4.3.1 and 4.3.2), step +APM |
+| `corrected-shift` | corrected control comparison (Section 4.3.4) |
 
 The parameter sets of all runs are listed in Appendix A of the thesis.
 
